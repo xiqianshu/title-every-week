@@ -53,10 +53,11 @@ export class Workflow {
     return { config, jobs: jobs.slice(-20).reverse(), notes, posts, itemCount: items.length, state, busy: this.busy, browserConfigured: config.collector === 'opencli' || Boolean(secrets.playwrightToken) };
   }
   async updateJob(job) {
-    const jobs = await this.store.read('jobs');
-    const index = jobs.findIndex(j => j.id === job.id);
-    if (index >= 0) jobs[index] = { ...job }; else jobs.push({ ...job });
-    await this.store.write('jobs', jobs.slice(-50));
+    await this.store.update('jobs', jobs => {
+      const index = jobs.findIndex(j => j.id === job.id);
+      if (index >= 0) jobs[index] = { ...job }; else jobs.push({ ...job });
+      return jobs.slice(-50);
+    });
   }
   async run(kind) {
     if (!['collect', 'weekly', 'review', 'daily'].includes(kind)) throw new Error('无效的任务类型');
@@ -69,8 +70,10 @@ export class Workflow {
       release = await this.store.lock();
       await this.updateJob(job);
       const [config, posts] = await Promise.all([this.store.read('config'), this.store.read('posts')]);
-      const sources = makeSources(config, kind === 'review' ? posts : posts.filter(p => Date.now() - Date.parse(p.publishedAt) <= 15 * 86400000));
+      const sourceState = await this.store.read('state');
+      const sources = makeSources(config, posts, { snapshots: await this.store.read('snapshots'), attempts: sourceState.sourceAttempts, reviewOnly: kind === 'review' });
       const selected = kind === 'review' ? sources.filter(s => s.kind === 'published') : sources;
+      await this.store.update('state', value => ({ ...value, sourceAttempts: { ...value.sourceAttempts, ...Object.fromEntries(selected.filter(s => s.postId).map(s => [s.postId, new Date().toISOString()])) } }));
       job.stage = '正在读取两平台页面'; await this.updateJob(job);
       if (selected.length) collection = await this.providers.collect(selected, config);
       if (!collection.items.length && kind !== 'review') throw new Error('本次没有取得有效资料：' + collection.sources.map(s => label[s.platform] + ' ' + (s.message || s.status)).join('；'));
@@ -78,9 +81,8 @@ export class Workflow {
       const merged = new Map(existing.map(i => [i.id, i]));
       for (const item of collection.items) merged.set(item.id, item);
       await this.store.write('items', [...merged.values()].slice(-500));
-      const snapshots = await this.store.read('snapshots');
-      snapshots.push(...collection.items.map(i => ({ itemId: i.id, postId: i.postId, collectedAt: i.collectedAt, metrics: i.metrics, url: i.url })));
-      await this.store.write('snapshots', snapshots.slice(-10000));
+      const observations = collection.items.map(i => ({ itemId: i.id, postId: i.postId, collectedAt: i.collectedAt, metrics: i.metrics, url: i.url }));
+      const snapshots = await this.store.update('snapshots', values => [...values, ...observations].slice(-10000));
       const state = await this.store.read('state');
       let previousReview = null;
       if (state.lastReviewId) { try { previousReview = JSON.parse(await readFile(path.join(this.store.root, 'reports', state.lastReviewId + '.json'), 'utf8')).review; } catch {} }

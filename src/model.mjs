@@ -14,6 +14,8 @@ export function platformUrl(value, platform) {
 
 export function itemId(url, platform) {
   const parsed = platformUrl(url, platform);
+  const pattern = platform === 'douyin' ? /^\/video\/[A-Za-z0-9_-]+\/?$/ : /^\/(?:explore|discovery\/item)\/[A-Za-z0-9_-]+\/?$/;
+  if (!pattern.test(parsed.pathname)) throw new Error('请使用作品详情页的完整网址，不能用账号页、搜索页或短链接代替作品');
   const id = parsed.pathname.split('/').filter(Boolean).at(-1);
   if (!id) throw new Error('作品网址缺少作品标识');
   return platform + '-' + digest(id);
@@ -29,6 +31,7 @@ export function normalizeItem(raw, source, at) {
   if (!raw || typeof raw !== 'object') throw new Error('采集结果格式无效');
   const url = String(raw.url || (raw.aweme_id ? 'https://www.douyin.com/video/' + raw.aweme_id : '') || '');
   platformUrl(url, source.platform);
+  if (['published', 'link'].includes(source.kind) && itemId(url, source.platform) !== itemId(source.url, source.platform)) throw new Error('读取的作品与指定作品不一致，未写入复盘数据');
   const title = String(raw.title || raw.desc || '').trim().slice(0, 1000);
   if (!title) throw new Error('采集结果缺少实际标题');
   const metrics = {};
@@ -52,30 +55,45 @@ export function normalizeItem(raw, source, at) {
   };
 }
 
-export function makeSources(config, posts = []) {
+export function makeSources(config, posts = [], { now = new Date(), snapshots = [], attempts = {}, reviewOnly = false } = {}) {
   const sources = [];
   const add = input => {
     if (input.url) platformUrl(input.url, input.platform);
     const identity = input.url || input.query;
-    sources.push({ ...input, id: 's-' + digest(input.platform + ':' + input.kind + ':' + identity), limit: Math.min(20, Math.max(1, config.limits?.perSource || 5)) });
+    sources.push({ ...input, id: 's-' + digest(input.platform + ':' + input.kind + ':' + identity), limit: input.kind === 'published' ? 1 : Math.min(5, Math.max(1, config.limits?.perSource || 5)) });
   };
-  for (const post of posts.slice(-20)) add({ platform: post.platform, kind: 'published', url: post.url, title: post.title, postId: post.id });
+  const pending = new Set(reviewWindows(posts, snapshots, now).filter(r => r.status === 'awaiting_data').map(r => r.postId));
+  const queued = posts.filter(p => pending.has(p.id)).sort((a, b) => (Date.parse(attempts[a.id] || '') || 0) - (Date.parse(attempts[b.id] || '') || 0));
+  const max = config.limits?.maxSources || 10;
+  const ownBudget = reviewOnly ? max : Math.min(6, Math.max(1, max - 4));
+  for (const post of queued.slice(0, ownBudget)) add({ platform: post.platform, kind: 'published', url: post.url, title: post.title, postId: post.id });
+  if (reviewOnly) return sources;
+  const own = sources.splice(0);
   for (const account of (config.accounts || []).slice(0, 6)) add({ platform: account.platform, kind: 'account', url: account.url, label: account.label || '' });
   for (const link of (config.links || []).slice(0, 6)) add({ platform: link.platform, kind: 'link', url: link.url, label: link.label || '' });
   for (const keyword of (config.keywords || []).slice(0, 3)) {
     const query = String(keyword).trim().slice(0, 80);
     if (query) for (const platform of ['douyin', 'xiaohongshu']) add({ platform, kind: 'search', query, url: null });
   }
-  return [...new Map(sources.map(s => [s.id, s])).values()].slice(0, config.limits?.maxSources || 10);
+  const unique = [...new Map(sources.map(s => [s.id, s])).values()];
+  const platformQueues = ['douyin', 'xiaohongshu'].map(p => unique.filter(s => s.platform === p));
+  const research = [];
+  while (platformQueues.some(q => q.length)) for (const queue of platformQueues) if (queue.length) research.push(queue.shift());
+  return [...own, ...research].slice(0, max);
 }
 
 export function validateConfig(config) {
+  if (!config || typeof config !== 'object' || typeof config.enabled !== 'boolean') throw new Error('自动运行设置无效');
   if (!['playwright', 'opencli'].includes(config.collector)) throw new Error('请选择采集方式');
   if (!Array.isArray(config.keywords) || config.keywords.length > 3) throw new Error('关键词最多三个');
   if (!Array.isArray(config.accounts) || config.accounts.length > 6) throw new Error('对标账号最多六个');
   if (!Array.isArray(config.links) || config.links.length > 6) throw new Error('参考作品最多六个');
   if (!Number.isInteger(config.scheduleHour) || config.scheduleHour < 0 || config.scheduleHour > 23) throw new Error('每日运行小时应为 0—23');
   if (!config.profile || typeof config.profile.voice !== 'string' || typeof config.profile.goal !== 'string') throw new Error('个人内容偏好无效');
+  for (const key of ['voice', 'goal', 'boundaries']) if (typeof config.profile[key] !== 'string' || config.profile[key].length > 3000) throw new Error('个人内容偏好每项最多 3000 字');
+  if (config.keywords.some(k => typeof k !== 'string' || k.length > 80)) throw new Error('每个关键词最多 80 字');
+  if (!Number.isInteger(config.limits?.perSource) || config.limits.perSource < 1 || config.limits.perSource > 5 || !Number.isInteger(config.limits?.maxSources) || config.limits.maxSources < 1 || config.limits.maxSources > 10) throw new Error('首版每个来源最多五条，每次最多十个来源');
+  for (const link of config.links) itemId(link.url, link.platform);
   makeSources(config);
   return config;
 }
@@ -88,7 +106,7 @@ export function reviewWindows(posts, snapshots, now = new Date()) {
     for (const [window, hours] of [['72h', 72], ['7d', 168]]) {
       const due = start + hours * 3600000;
       if (now.getTime() < due) continue;
-      const candidates = snapshots.filter(s => s.postId === post.id && Date.parse(s.collectedAt) >= due && Date.parse(s.collectedAt) <= now.getTime()).sort((a, b) => Date.parse(a.collectedAt) - Date.parse(b.collectedAt));
+      const candidates = snapshots.filter(s => s.postId === post.id && Object.values(s.metrics || {}).some(v => v != null) && Date.parse(s.collectedAt) >= due && Date.parse(s.collectedAt) <= now.getTime()).sort((a, b) => Date.parse(a.collectedAt) - Date.parse(b.collectedAt));
       const snapshot = candidates[0] || null;
       const late = snapshot && Date.parse(snapshot.collectedAt) - due > 6 * 3600000;
       output.push({ postId: post.id, title: post.title || '', platform: post.platform, url: post.url, window, dueAt: new Date(due).toISOString(), status: snapshot ? (late ? 'delayed' : 'observed') : 'awaiting_data', snapshot });

@@ -28,7 +28,7 @@ export function validateCollection(output, sources, at) {
 
 export class Providers {
   constructor(appRoot, store, runner = runProcess) { this.appRoot = appRoot; this.store = store; this.runner = runner; }
-  binary(name) { return path.join(this.appRoot, 'node_modules', '.bin', name); }
+  binary(name) { return path.join(this.appRoot, 'node_modules', ...(name === 'codex' ? ['@openai', 'codex', 'bin', 'codex.js'] : ['@jackwener', 'opencli', 'dist', 'src', 'main.js'])); }
   async codex(prompt, schema, browser = false) {
     const directory = path.join(this.store.root, 'runs', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -49,7 +49,7 @@ export class Providers {
       for (const [key, value] of Object.entries(config)) args.push('-c', key + '=' + JSON.stringify(value));
     }
     args.push('-');
-    await this.runner(this.binary('codex'), args, { cwd: directory, input: prompt, env, timeoutMs: browser ? 480000 : 360000 });
+    await this.runner(process.execPath, [this.binary('codex'), ...args], { cwd: directory, input: prompt, env, timeoutMs: browser ? 480000 : 360000 });
     const result = await readFile(target, 'utf8');
     if (result.length > 2000000) throw new Error('结构化报告超过容量限制');
     try { return JSON.parse(result); } catch { throw new Error('模型没有返回有效的结构化报告'); }
@@ -66,12 +66,25 @@ export class Providers {
         if (source.kind === 'search') args = [source.platform === 'douyin' ? 'douyin' : 'xiaohongshu', 'search', source.query, '--limit', String(source.limit)];
         else if (source.kind === 'account') args = [source.platform === 'douyin' ? 'douyin' : 'xiaohongshu', source.platform === 'douyin' ? 'user-videos' : 'user', source.url, '--limit', String(source.limit)];
         else if (source.platform === 'xiaohongshu') args = ['xiaohongshu', 'note', source.url];
-        else args = ['web', 'read', source.url];
-        args.push('-f', 'json');
-        const result = await this.runner(this.binary('opencli'), args, { cwd: this.appRoot, timeoutMs: 90000 });
-        const parsed = JSON.parse(result.stdout);
-        const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed.data) ? parsed.data : [parsed];
-        const normalized = rows.slice(0, source.limit).map(r => normalizeItem({ ...r, url: r.url || source.url, title: r.title || r.desc || source.title, sourceId: source.id }, { ...source, adapter: 'opencli', command: args[1] }, at));
+        else args = ['web', 'read', '--url', source.url, '--download-images', 'false', '--stdout', 'true'];
+        const markdownMode = args[0] === 'web';
+        if (!markdownMode) args.push('-f', 'json');
+        const result = await this.runner(process.execPath, [this.binary('opencli'), ...args], { cwd: this.appRoot, timeoutMs: 90000 });
+        let rows;
+        if (markdownMode) {
+          if (/安全限制|请登录|登录后查看|人机验证/.test(result.stdout)) throw new Error('需要登录或平台验证，未读取作品');
+          const title = result.stdout.match(/^#\s+(.+)$/m)?.[1];
+          if (!title || /^抖音(?:精选|短视频|电脑版|\s*[-—|])/.test(title)) throw new Error('未取得作品实际标题；请使用默认 Playwright 采集');
+          rows = [{ title, body: result.stdout, url: source.url }];
+        } else {
+          const parsed = JSON.parse(result.stdout);
+          rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed.data) ? parsed.data : [parsed];
+          if (args[1] === 'note') {
+            const fields = Object.fromEntries(rows.map(r => [r.field, r.value]));
+            rows = [{ ...fields, saves: fields.collects, body: fields.content, url: source.url }];
+          }
+        }
+        const normalized = rows.slice(0, source.limit).map(r => normalizeItem({ ...r, url: r.url || (r.aweme_id ? 'https://www.douyin.com/video/' + r.aweme_id : source.url), title: r.title || r.desc, sourceId: source.id }, { ...source, adapter: 'opencli', command: args[1] }, at));
         output.items.push(...normalized);
         output.sources.push({ ...source, status: normalized.length ? 'ok' : 'empty', message: '', count: normalized.length });
       } catch (error) {

@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { Store } from '../src/store.mjs';
 
 const runtime = await import('../src/runtime.mjs').catch(() => ({}));
 const providers = await import('../src/providers.mjs').catch(() => ({}));
@@ -37,6 +41,19 @@ test('cross-platform collection rows cannot masquerade as the requested platform
   assert.throws(() => providers.validateCollection({ sources: [{ sourceId: 's1', status: 'ok', message: '' }], items: [{ ...raw, url: 'https://www.xiaohongshu.com/explore/abc' }] }, [source], '2026-10-08T01:00:00Z'));
 });
 
+test('a different work cannot be recorded as an observation of my published work', () => {
+  const published = { ...source, kind: 'published', postId: 'mine', url: raw.url };
+  assert.throws(() => providers.validateCollection({ sources: [{ sourceId: 's1', status: 'ok' }], items: [{ ...raw, url: 'https://www.douyin.com/video/456' }] }, [published], '2026-10-08T01:00:00Z'), /作品/);
+});
+
+test('stopping the background service cancels its active subprocesses', async () => {
+  assert.equal(typeof runtime.cancelProcesses, 'function');
+  const running = runtime.runProcess(process.execPath, ['-e', 'setTimeout(()=>{},30000)'], { timeoutMs: 5000 });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  runtime.cancelProcesses();
+  await assert.rejects(running, /停止/);
+});
+
 test('weekly content rejects fabricated evidence and keeps personal drafts pending', () => {
   assert.equal(typeof prompts.validatePack, 'function');
   const bundle = { items: [{ id: 'actual-source', title: '来源' }], notes: [], profile: {} };
@@ -56,4 +73,30 @@ test('generation prompt separates external text from instructions and carries pe
   assert.match(prompt, /不可信/);
   assert.match(prompt, /不编造收入/);
   assert.match(prompt, /IGNORE ALL INSTRUCTIONS/);
+});
+
+test('background providers use absolute Node and handle pinned OpenCLI note and account formats', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'creator-provider-'));
+  try {
+    const store = new Store(root); await store.init();
+    const calls = [];
+    const provider = new providers.Providers(path.resolve('.'), store, async (command, args) => {
+      calls.push({ command, args });
+      const output = args.includes('note') ? [{ field: 'title', value: '真实笔记标题' }, { field: 'content', value: '真实笔记正文' }, { field: 'collects', value: '12' }] : [{ aweme_id: '123', title: '账号作品', digg_count: 4 }];
+      return { stdout: JSON.stringify(output) };
+    });
+    const result = await provider.collect([{ id: 'note', platform: 'xiaohongshu', kind: 'link', url: 'https://www.xiaohongshu.com/explore/abc?xsec_token=test', limit: 5 }, { id: 'account', platform: 'douyin', kind: 'account', url: 'https://www.douyin.com/user/MS4wLjABAAAAexample', limit: 5 }], { collector: 'opencli' });
+    assert.ok(calls.every(c => c.command === process.execPath));
+    assert.equal(result.items.length, 2);
+    assert.equal(result.items[0].body, '真实笔记正文');
+    assert.equal(result.items[0].metrics.saves, 12);
+    assert.equal(result.items[1].url, 'https://www.douyin.com/video/123');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('writing input stays bounded when the archive contains long material', () => {
+  const bundle = { profile: {}, items: Array.from({ length: 50 }, (_, i) => ({ id: 'i' + i, title: '来源', body: '长正文'.repeat(4000), comments: Array(10).fill('长评论'.repeat(500)) })), notes: Array.from({ length: 30 }, (_, i) => ({ id: 'n' + i, text: '真实素材'.repeat(2500) })), reviews: [] };
+  const prompt = prompts.buildPrompt(bundle, 'weekly');
+  assert.ok(prompt.length < 100000);
+  assert.match(prompt, /截断/);
 });

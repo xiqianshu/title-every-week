@@ -69,3 +69,24 @@ test('initialization preserves existing personal configuration and writes privat
     await assert.rejects(store.read('../escape'));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('empty observations cannot mask a later usable backend observation', () => {
+  const posts = [{ id: 'p1', publishedAt: '2026-10-01T01:00:00Z' }];
+  const snapshots = [{ postId: 'p1', collectedAt: '2026-10-04T01:00:00Z', metrics: { views: null } }, { postId: 'p1', collectedAt: '2026-10-04T02:00:00Z', metrics: { views: 1000, likes: 60 } }];
+  assert.equal(model.reviewWindows(posts, snapshots.slice(0, 1), new Date('2026-10-04T03:00:00Z'))[0].status, 'awaiting_data');
+  assert.equal(model.reviewWindows(posts, snapshots, new Date('2026-10-04T03:00:00Z'))[0].snapshot.metrics.likes, 60);
+});
+
+test('a growing post queue rotates due posts and retains research from both platforms', () => {
+  const posts = Array.from({ length: 16 }, (_, i) => ({ id: 'p' + i, platform: 'douyin', url: 'https://www.douyin.com/video/' + i, publishedAt: '2026-10-01T01:00:00Z' }));
+  const config = model.defaultConfig();
+  const first = model.makeSources(config, posts, { now: new Date('2026-10-08T02:00:00Z') });
+  assert.ok(first.some(s => s.kind === 'search' && s.platform === 'xiaohongshu'));
+  assert.ok(first.some(s => s.kind === 'published'));
+  const attempts = Object.fromEntries(first.filter(s => s.postId).map(s => [s.postId, '2026-10-08T02:00:00Z']));
+  const next = model.makeSources(config, posts, { now: new Date('2026-10-09T02:00:00Z'), attempts });
+  assert.ok(next.some(s => s.postId === 'p6'));
+  Object.assign(attempts, Object.fromEntries(next.filter(s => s.postId).map(s => [s.postId, '2026-10-09T02:00:00Z'])));
+  const third = model.makeSources(config, posts, { now: new Date('2026-10-10T02:00:00Z'), attempts });
+  assert.ok(third.some(s => s.postId === 'p15'));
+});

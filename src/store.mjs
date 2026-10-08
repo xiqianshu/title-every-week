@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { defaultConfig } from './model.mjs';
 
 export class Store {
-  constructor(root) { this.root = path.resolve(root); }
+  constructor(root) { this.root = path.resolve(root); this.updates = new Map(); }
   file(name) {
     if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('无效的数据名称');
     return path.join(this.root, name + '.json');
@@ -20,6 +20,16 @@ export class Store {
     }
   }
   async read(name) { return JSON.parse(await readFile(this.file(name), 'utf8')); }
+  async update(name, transform) {
+    const previous = this.updates.get(name) || Promise.resolve();
+    const current = previous.catch(() => {}).then(async () => {
+      const value = await transform(await this.read(name));
+      await this.write(name, value);
+      return value;
+    });
+    this.updates.set(name, current);
+    try { return await current; } finally { if (this.updates.get(name) === current) this.updates.delete(name); }
+  }
   async write(name, value) {
     const target = this.file(name);
     const temporary = target + '.' + randomUUID() + '.tmp';
