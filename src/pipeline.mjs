@@ -50,7 +50,7 @@ export class Workflow {
   constructor(store, providers, notify = async () => {}) { this.store = store; this.providers = providers; this.notify = notify; this.busy = false; this.ticking = false; }
   async status() {
     const [config, jobs, notes, posts, items, state, secrets] = await Promise.all(['config', 'jobs', 'notes', 'posts', 'items', 'state', 'secrets'].map(n => this.store.read(n)));
-    return { config, jobs: jobs.slice(-20).reverse(), notes, posts, itemCount: items.length, state, busy: this.busy, browserConfigured: config.collector === 'opencli' || Boolean(secrets.playwrightToken) };
+    return { config, jobs: jobs.slice(-20).reverse(), notes, posts, itemCount: items.length, state, busy: this.busy, playwrightTokenSaved: Boolean(secrets.playwrightToken), browserConfigured: config.collector === 'opencli' || Boolean(secrets.playwrightToken) };
   }
   async updateJob(job) {
     await this.store.update('jobs', jobs => {

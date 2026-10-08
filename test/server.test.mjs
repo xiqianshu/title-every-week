@@ -22,12 +22,17 @@ test('HTTP configuration persists without returning the browser connection token
   assert.equal(typeof web.createServer, 'function');
   const env = await setup();
   try {
+    const before = await (await fetch(env.origin + '/api/status')).json();
+    assert.equal(before.playwrightTokenSaved, false);
     const config = await env.store.read('config'); config.profile.voice = '我自己的口吻';
     assert.equal((await env.post('/api/config', { config, playwrightToken: 'private-test-token' })).status, 200);
     const status = await (await fetch(env.origin + '/api/status')).json();
     assert.equal(status.config.profile.voice, '我自己的口吻');
     assert.equal(status.browserConfigured, true);
+    assert.equal(status.playwrightTokenSaved, true);
     assert.ok(!JSON.stringify(status).includes('private-test-token'));
+    assert.equal((await env.store.read('secrets')).playwrightToken, 'private-test-token');
+    assert.equal((await env.post('/api/config', { config, playwrightToken: '' })).status, 200);
     assert.equal((await env.store.read('secrets')).playwrightToken, 'private-test-token');
   } finally { await env.close(); }
 });

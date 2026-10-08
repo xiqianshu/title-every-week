@@ -21,3 +21,5 @@ Remaining acceptance: user installs on their Mac, supplies the current extension
 Preflight: Task 2 consumes Task 1 source IDs and normalized metrics; Task 3 consumes both providers and Store; Task 4 consumes Workflow and scheduleDue. Interfaces named consistently in the plan.
 
 Deployment boundary: current cloud session cannot install on the user's Mac. Packaging and automated local tests are possible here; real browser acceptance requires the one-time Mac install.
+
+Settings feedback follow-up (2026-10-08): the user's Mac screenshot confirms configuration was saved; live platform collection is still pending. The workbench now shows saved-token status without returning its value, an inline save confirmation, a saving button state and inline failures with the input retained. A real Chromium check reproduces the missing confirmation on the prior UI and passes on the new UI, including refresh persistence and secret exclusion. HTTP checks also confirm an empty token field preserves the existing credential. All 33 tests and the repository check pass after this change.

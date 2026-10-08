@@ -5,6 +5,7 @@ const platformNames = { douyin: '抖音', xiaohongshu: '小红书' };
 const jobNames = { weekly: '本周选题与两平台稿件', collect: '资料采集', daily: '每日采集与复盘', review: '发布复盘' };
 function element(tag, text, className) { const node = document.createElement(tag); if (text != null) node.textContent = text; if (className) node.className = className; return node; }
 function showMessage(text) { $('message').textContent = text; $('message').hidden = false; }
+function settingsFeedback(text, failed = false) { const message = $('settings-feedback'); message.textContent = text; message.classList.toggle('failed', failed); message.hidden = false; }
 async function api(route, data) {
   const response = await fetch(route, data === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workflow-Request': '1' }, body: JSON.stringify(data) });
   const result = await response.json(); if (!response.ok) throw new Error(result.error || '操作未完成'); return result;
@@ -39,6 +40,8 @@ function render(status) {
   $('schedule-state').textContent = status.config.enabled ? '已开启' : '未开启';
   $('schedule-detail').textContent = status.config.enabled ? '每日 ' + String(status.config.scheduleHour).padStart(2, '0') + ':00（北京时间）' : '保存连接设置后可开启';
   $('connection-banner').hidden = status.browserConfigured;
+  const tokenSaved = status.playwrightTokenSaved ?? (status.config.collector === 'playwright' && status.browserConfigured);
+  $('browser-token-state').textContent = tokenSaved ? '连接令牌已保存。输入框留空即可；实际浏览器连接等待首次采集验证。' : '尚未保存连接令牌。粘贴后点击下方「保存设置」。';
   $('current-stage').textContent = status.busy ? status.jobs.find(j => j.status === 'running')?.stage || '任务正在启动' : '准备就绪';
   document.querySelectorAll('.run').forEach(button => { button.disabled = status.busy; });
   const reports = status.jobs.map(job => {
@@ -65,12 +68,19 @@ $('collector').onchange = showCollector;
 $('add-account').onclick = () => addSource('accounts'); $('add-link').onclick = () => addSource('links');
 $('settings-form').onsubmit = async event => {
   event.preventDefault();
+  const button = $('settings-save'); if (button.disabled) return;
+  button.disabled = true; button.textContent = '正在保存…'; settingsFeedback('正在保存设置…');
   try {
     const config = { ...current.config, collector: $('collector').value, scheduleHour: Number($('schedule-hour').value), enabled: $('auto-enabled').checked, keywords: $('keywords').value.split(/[,，\n]/).map(s => s.trim()).filter(Boolean), accounts: sourcesFrom('accounts'), links: sourcesFrom('links'), profile: { ...current.config.profile, goal: $('profile-goal').value.trim(), voice: $('profile-voice').value.trim(), boundaries: $('profile-boundaries').value.trim() } };
     let playwrightToken = $('browser-token').value.trim(); if (playwrightToken.startsWith('PLAYWRIGHT_MCP_EXTENSION_TOKEN=')) playwrightToken = playwrightToken.slice('PLAYWRIGHT_MCP_EXTENSION_TOKEN='.length);
-    await api('/api/config', { config, playwrightToken }); $('browser-token').value = ''; showMessage('设置已保存。可以回到概览，生成第一份选题包。'); await refresh();
-  } catch (error) { showMessage(error.message); }
+    await api('/api/config', { config, playwrightToken }); $('browser-token').value = ''; button.textContent = '已保存 ✓';
+    settingsFeedback('设置已保存。令牌输入框已清空以隐藏内容，已有令牌会保留。下一步回到概览，点击「只收集资料」验证连接。');
+    showMessage('设置已保存。可以回到概览，点击「只收集资料」验证连接。'); await refresh();
+    $('settings-feedback').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } catch (error) { button.textContent = '保存设置'; settingsFeedback('设置未保存：' + error.message, true); showMessage(error.message); }
+  finally { button.disabled = false; }
 };
+$('settings-form').addEventListener('input', () => { if (!$('settings-save').disabled) { $('settings-save').textContent = '保存设置'; $('settings-feedback').hidden = true; } });
 $('note-form').onsubmit = async event => { event.preventDefault(); try { await api('/api/notes', { text: $('note-text').value }); $('note-text').value = ''; showMessage('真实素材已保存，下轮写稿会参考它。'); await refresh(); } catch (error) { showMessage(error.message); } };
 $('post-form').onsubmit = async event => {
   event.preventDefault();
