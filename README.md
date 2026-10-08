@@ -4,6 +4,8 @@
 
 ## 下一步：只配置一次
 
+[从 GitHub 下载完整 Mac 安装包](https://github.com/xiqianshu/title-every-week/raw/refs/heads/feat/creator-automation/releases/creator-workflow-mac.zip)。若直接下载链接没有保存文件，可打开该分支的 `releases/creator-workflow-mac.zip` 文件页，点击 **Download raw file**。
+
 1. 解压 Mac 安装包，双击 **安装.command**。首次下载固定版本依赖，沿用已安装的 Node.js、Chrome 和 Codex 登录。若 macOS 拦截文件，按 Finder 右键「打开」及系统提示操作。
 2. 在自动打开的中文工作台进入「账号与自动运行」，保持默认 **Playwright**。打开此前的 Playwright 扩展连接页面，把 `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` 后面的值粘贴到工作台；也支持粘贴整行。令牌只保存到本机，不发到聊天里。
 3. Chrome 保持打开，分别正常登录抖音和小红书。保存设置，点击 **只收集资料**。报告应分别列出两个平台的实际作品标题、链接、读取时间和来源状态；页面能打开不算读取成功。
