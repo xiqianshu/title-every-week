@@ -1,0 +1,9 @@
+{
+  "type": "object", "additionalProperties": false, "required": ["summary", "findings", "nextWeekAdvice"],
+  "properties": {
+    "summary": { "type": "string" }, "nextWeekAdvice": { "type": "array", "items": { "type": "string" } },
+    "findings": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["postIds", "window", "observation", "limits", "nextExperiment"], "properties": {
+      "postIds": { "type": "array", "items": { "type": "string" } }, "window": { "type": "string", "enum": ["72h", "7d"] }, "observation": { "type": "string" }, "limits": { "type": "string" }, "nextExperiment": { "type": "string" }
+    } } }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["sources", "items"],
+  "properties": {
+    "sources": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["sourceId", "status", "message"], "properties": { "sourceId": { "type": "string" }, "status": { "type": "string", "enum": ["ok", "empty", "blocked", "error"] }, "message": { "type": "string" } } } },
+    "items": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["sourceId", "title", "url", "body", "author", "publishedAt", "metrics", "metricEvidence", "comments"], "properties": {
+      "sourceId": { "type": "string" }, "title": { "type": "string" }, "url": { "type": "string" }, "body": { "type": "string" }, "author": { "type": ["string", "null"] }, "publishedAt": { "type": ["string", "null"] }, "metricEvidence": { "type": ["string", "null"] }, "comments": { "type": "array", "items": { "type": "string" } },
+      "metrics": { "type": "object", "additionalProperties": false, "required": ["views", "likes", "comments", "saves", "shares", "followers"], "properties": { "views": { "type": ["number", "null"] }, "likes": { "type": ["number", "null"] }, "comments": { "type": ["number", "null"] }, "saves": { "type": ["number", "null"] }, "shares": { "type": ["number", "null"] }, "followers": { "type": ["number", "null"] } } }
+    } } }
+  }
+}

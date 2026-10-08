@@ -1,0 +1,15 @@
+{
+  "type": "object", "additionalProperties": false, "required": ["summary", "topics", "nextQuestions"],
+  "properties": {
+    "summary": { "type": "string" }, "nextQuestions": { "type": "array", "items": { "type": "string" } },
+    "topics": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "object", "additionalProperties": false,
+      "required": ["id", "pillar", "title", "angle", "reason", "sourceIds", "factIds", "missingMaterials", "douyin", "xiaohongshu"],
+      "properties": {
+        "id": { "type": "string" }, "pillar": { "type": "string", "enum": ["AI实践", "日常生活", "个人心得"] }, "title": { "type": "string" }, "angle": { "type": "string" }, "reason": { "type": "string" },
+        "sourceIds": { "type": "array", "items": { "type": "string" } }, "factIds": { "type": "array", "items": { "type": "string" } }, "missingMaterials": { "type": "array", "items": { "type": "string" } },
+        "douyin": { "type": "object", "additionalProperties": false, "required": ["title", "cover", "script", "caption", "shots"], "properties": { "title": { "type": "string" }, "cover": { "type": "string" }, "script": { "type": "string" }, "caption": { "type": "string" }, "shots": { "type": "array", "items": { "type": "string" } } } },
+        "xiaohongshu": { "type": "object", "additionalProperties": false, "required": ["title", "cover", "pages", "caption"], "properties": { "title": { "type": "string" }, "cover": { "type": "string" }, "pages": { "type": "array", "items": { "type": "string" } }, "caption": { "type": "string" } } }
+      }
+    } }
+  }
+}
