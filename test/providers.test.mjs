@@ -38,12 +38,31 @@ test('collection rejects invented source IDs and includes missing request failur
 
 test('cross-platform collection rows cannot masquerade as the requested platform', () => {
   assert.equal(typeof providers.validateCollection, 'function');
-  assert.throws(() => providers.validateCollection({ sources: [{ sourceId: 's1', status: 'ok', message: '' }], items: [{ ...raw, url: 'https://www.xiaohongshu.com/explore/abc' }] }, [source], '2026-10-08T01:00:00Z'));
+  const result = providers.validateCollection({ sources: [{ sourceId: 's1', status: 'ok', message: '' }], items: [{ ...raw, url: 'https://www.xiaohongshu.com/explore/abc' }] }, [source], '2026-10-08T01:00:00Z');
+  assert.deepEqual(result.items, []);
+  assert.equal(result.sources[0].status, 'error');
 });
 
 test('a different work cannot be recorded as an observation of my published work', () => {
   const published = { ...source, kind: 'published', postId: 'mine', url: raw.url };
-  assert.throws(() => providers.validateCollection({ sources: [{ sourceId: 's1', status: 'ok' }], items: [{ ...raw, url: 'https://www.douyin.com/video/456' }] }, [published], '2026-10-08T01:00:00Z'), /作品/);
+  const result = providers.validateCollection({ sources: [{ sourceId: 's1', status: 'ok' }], items: [{ ...raw, url: 'https://www.douyin.com/video/456' }] }, [published], '2026-10-08T01:00:00Z');
+  assert.deepEqual(result.items, []);
+  assert.equal(result.sources[0].status, 'error');
+  assert.match(result.sources[0].message, /作品/);
+});
+
+test('one invalid result does not discard valid works from either platform', () => {
+  const other = { id: 's2', platform: 'xiaohongshu', kind: 'search', query: 'AI', limit: 3 };
+  const output = { sources: [{ sourceId: 's1', status: 'ok', message: '' }, { sourceId: 's2', status: 'ok', message: '' }], items: [raw, { ...raw, url: 'https://www.douyin.com/user/account?private=do-not-show' }, { ...raw, sourceId: 's2', url: 'https://www.xiaohongshu.com/explore/abc' }] };
+  const result = providers.validateCollection(output, [source, other], '2026-10-08T01:00:00Z');
+  assert.equal(result.items.length, 2);
+  assert.deepEqual(result.items.map(i => i.platform), ['douyin', 'xiaohongshu']);
+  assert.equal(result.sources[0].status, 'error');
+  assert.equal(result.sources[0].count, 1);
+  assert.match(result.sources[0].message, /第 2 条/);
+  assert.match(result.sources[0].message, /\/user\/account/);
+  assert.ok(!result.sources[0].message.includes('do-not-show'));
+  assert.equal(result.sources[1].status, 'ok');
 });
 
 test('stopping the background service cancels its active subprocesses', async () => {

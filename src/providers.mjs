@@ -9,8 +9,9 @@ export function validateCollection(output, sources, at) {
   if (!Array.isArray(output?.sources) || !Array.isArray(output?.items)) throw new Error('采集输出格式无效');
   const requests = new Map(sources.map(s => [s.id, s]));
   for (const result of output.sources) if (!requests.has(result.sourceId) || !['ok', 'empty', 'blocked', 'error'].includes(result.status)) throw new Error('采集输出含未知来源或状态');
-  const counts = new Map();
-  const items = output.items.map(raw => {
+  const counts = new Map(), accepted = new Map(), rejected = new Map();
+  const items = [];
+  for (const raw of output.items) {
     const source = requests.get(raw.sourceId);
     if (!source) throw new Error('作品引用了未请求的来源');
     const result = output.sources.find(r => r.sourceId === source.id);
@@ -18,11 +19,22 @@ export function validateCollection(output, sources, at) {
     const count = (counts.get(source.id) || 0) + 1;
     counts.set(source.id, count);
     if (count > source.limit) throw new Error('来源返回作品数超过本次上限');
-    return normalizeItem(raw, source, at);
-  });
+    try {
+      items.push(normalizeItem(raw, source, at));
+      accepted.set(source.id, (accepted.get(source.id) || 0) + 1);
+    } catch (error) {
+      let link = '未提供有效网址';
+      try { const parsed = new URL(String(raw.url || '')); link = parsed.origin + parsed.pathname; } catch {}
+      const messages = rejected.get(source.id) || [];
+      messages.push('第 ' + count + ' 条结果被拒绝（' + link.slice(0, 300) + '）：' + safeMessage(error));
+      rejected.set(source.id, messages);
+    }
+  }
   return { items, sources: sources.map(s => {
     const result = output.sources.find(r => r.sourceId === s.id);
-    return { ...s, status: result?.status || 'error', message: String(result?.message || (result ? '' : '该来源未取得结果')).slice(0, 1000), count: counts.get(s.id) || 0 };
+    const failures = rejected.get(s.id) || [];
+    const message = [result?.message || (result ? '' : '该来源未取得结果'), ...failures].filter(Boolean).join('；');
+    return { ...s, status: failures.length ? 'error' : result?.status || 'error', message: message.slice(0, 1000), count: accepted.get(s.id) || 0 };
   }) };
 }
 

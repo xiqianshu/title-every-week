@@ -4,6 +4,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Store } from '../src/store.mjs';
+import { validateCollection } from '../src/providers.mjs';
 const pipeline = await import('../src/pipeline.mjs').catch(() => ({}));
 const schedule = await import('../src/schedule.mjs').catch(() => ({}));
 
@@ -27,6 +28,23 @@ test('partial collection produces a sourced pack with missing-platform status', 
     assert.equal(report.pack.topics.length, 4);
     assert.equal(report.collection.sources[1].status, 'blocked');
     assert.equal((await env.store.read('snapshots')).length, 1);
+  } finally { await rm(env.root, { recursive: true, force: true }); }
+});
+
+test('collection saves valid works and reports a rejected result from the same batch', async () => {
+  const env = await setup({ collect: async sources => {
+    const good = sources.find(s => s.kind === 'link');
+    const bad = sources.find(s => s.kind === 'search' && s.platform === 'douyin');
+    return validateCollection({ sources: [{ sourceId: good.id, status: 'ok', message: '' }, { sourceId: bad.id, status: 'ok', message: '' }], items: [{ sourceId: good.id, title: '已读取作品', url: good.url }, { sourceId: bad.id, title: '搜索结果', url: 'https://www.douyin.com/search/AI' }] }, sources, '2026-10-08T01:00:00Z');
+  }, generate: async () => { throw new Error('采集任务不应生成稿件'); } });
+  try {
+    const job = await env.workflow.run('collect');
+    assert.equal(job.status, 'partial');
+    assert.equal((await env.store.read('items')).length, 1);
+    const report = await readFile(path.join(env.root, 'reports', job.reportId + '.md'), 'utf8');
+    assert.match(report, /已读取作品/);
+    assert.match(report, /第 1 条结果被拒绝/);
+    assert.match(report, /\/search\/AI/);
   } finally { await rm(env.root, { recursive: true, force: true }); }
 });
 
