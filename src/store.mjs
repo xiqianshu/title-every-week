@@ -13,7 +13,7 @@ export class Store {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(path.join(this.root, 'reports'), { recursive: true, mode: 0o700 });
     await mkdir(path.join(this.root, 'runs'), { recursive: true, mode: 0o700 });
-    const defaults = { config: defaultConfig(), secrets: { playwrightToken: '' }, notes: [], posts: [], items: [], snapshots: [], jobs: [], state: { lastDaily: null, lastWeekly: null } };
+    const defaults = { config: defaultConfig(), secrets: { playwrightToken: '' }, notes: [], posts: [], items: [], snapshots: [], jobs: [], updater: { status: 'idle', message: '' }, state: { lastDaily: null, lastWeekly: null } };
     for (const [name, value] of Object.entries(defaults)) {
       try { await writeFile(this.file(name), JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 }); }
       catch (e) { if (e.code !== 'EEXIST') throw e; }

@@ -5,13 +5,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Store } from '../src/store.mjs';
 import { Workflow } from '../src/pipeline.mjs';
+import { Updater } from '../src/updater.mjs';
 const web = await import('../src/server.mjs').catch(() => ({}));
 
-async function setup() {
+async function setup(updaterFactory = null) {
   const root = await mkdtemp(path.join(tmpdir(), 'creator-http-test-'));
   const store = new Store(root); await store.init();
   const workflow = new Workflow(store, { collect: async () => ({ items: [], sources: [] }), generate: async () => {} });
-  const server = web.createServer(workflow);
+  const server = web.createServer(workflow, updaterFactory?.(workflow));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = 'http://127.0.0.1:' + server.address().port;
   const post = (route, data, headers = {}) => fetch(origin + route, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workflow-Request': '1', Origin: origin, ...headers }, body: JSON.stringify(data) });
@@ -96,5 +97,25 @@ test('concurrent acknowledged saves retain all personal material', async () => {
     const responses = await Promise.all(Array.from({ length: 10 }, (_, i) => env.post('/api/notes', { text: '真实素材 ' + i })));
     assert.ok(responses.every(r => r.status === 201));
     assert.equal((await env.store.read('notes')).length, 10);
+  } finally { await env.close(); }
+});
+
+test('workbench update endpoints enforce local approval and pause writes and content jobs', async () => {
+  const release = { version: '9.0.0', commit: 'a'.repeat(40), sha256: 'b'.repeat(64) };
+  let launches = 0;
+  const env = await setup(workflow => new Updater(path.resolve('.'), workflow, { supported: true, fetcher: async () => new Response(JSON.stringify(release)), launch: async () => { launches++; } }));
+  try {
+    assert.equal((await env.post('/api/update/check', {}, { Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await env.post('/api/update/check', {})).status, 200);
+    assert.equal((await env.post('/api/update/install', {})).status, 202);
+    assert.equal(launches, 1);
+    assert.equal((await env.post('/api/notes', { text: '更新过程中不得写入' })).status, 409);
+    assert.equal((await env.post('/api/run', { kind: 'collect' })).status, 409);
+    assert.deepEqual(await env.store.read('notes'), []);
+    const status = await (await fetch(env.origin + '/api/status')).json();
+    assert.equal(status.updater.busy, true);
+    assert.equal(status.busy, true);
+    assert.equal((await env.post('/api/update/install', {})).status, 400);
+    assert.equal((await env.store.read('updater')).status, 'installing');
   } finally { await env.close(); }
 });

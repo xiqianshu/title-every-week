@@ -7,6 +7,7 @@ import { Workflow } from './pipeline.mjs';
 import { createServer } from './server.mjs';
 import { installMac, notifyMac, APP_PORT } from './mac.mjs';
 import { safeMessage, cancelProcesses } from './runtime.mjs';
+import { Updater } from './updater.mjs';
 
 const appRoot = fileURLToPath(new URL('../', import.meta.url));
 const command = process.argv[2] || 'serve';
@@ -17,14 +18,16 @@ try {
   await store.init();
   const workflow = new Workflow(store, new Providers(appRoot, store), notifyMac);
   if (command === 'serve') {
-    const server = createServer(workflow);
+    const updater = new Updater(appRoot, workflow);
+    const tick = async () => { if (!await updater.busy()) await workflow.tick(); };
+    const server = createServer(workflow, updater);
     server.listen(Number(option('--port') || APP_PORT), '127.0.0.1', () => {
       console.log('内容工作台已启动；数据目录：' + dataRoot);
       console.log('工作台端口：' + server.address().port);
-      workflow.tick().catch(error => console.error(safeMessage(error)));
+      tick().catch(error => console.error(safeMessage(error)));
     });
     server.on('error', error => { console.error(safeMessage(error)); clearInterval(timer); cancelProcesses(); process.exitCode = 1; });
-    const timer = setInterval(() => workflow.tick().catch(error => console.error(safeMessage(error))), 60000);
+    const timer = setInterval(() => tick().catch(error => console.error(safeMessage(error))), 60000);
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { clearInterval(timer); cancelProcesses(); server.close(); setTimeout(() => process.exit(0), 1200); });
   } else if (command === 'install-mac') {
     await installMac(appRoot, dataRoot); console.log('后台已安装并响应，接下来在工作台完成浏览器连接与首次采集验收。');

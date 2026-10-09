@@ -1,5 +1,5 @@
 'use strict';
-let current, initialized = false, currentReport = '';
+let current, initialized = false, currentReport = '', loadedVersion = '';
 const $ = id => document.getElementById(id);
 const platformNames = { douyin: '抖音', xiaohongshu: '小红书' };
 const jobNames = { weekly: '本周选题与两平台稿件', collect: '资料采集', daily: '每日采集与复盘', review: '发布复盘' };
@@ -34,7 +34,22 @@ function initSettings(config) {
   $('accounts').replaceChildren(); $('links').replaceChildren(); config.accounts.forEach(a => addSource('accounts', a)); config.links.forEach(a => addSource('links', a)); showCollector();
 }
 function render(status) {
+  const wasUpdating = current?.updater?.busy;
   current = status;
+  const update = status.updater;
+  if (update) {
+    if (loadedVersion && loadedVersion !== update.currentVersion && !update.busy) { location.reload(); return; }
+    if (!loadedVersion) loadedVersion = update.currentVersion;
+    if (wasUpdating && !update.busy) showMessage(update.message);
+    $('program-version').textContent = '当前版本：' + update.currentVersion;
+    $('update-feedback').textContent = update.message + (update.supported ? '' : ' 此运行环境可检查版本；安装更新请使用 Mac 安装入口。');
+    $('update-feedback').classList.toggle('failed', ['failed', 'check-failed'].includes(update.status));
+    $('update-check').disabled = status.busy || update.checking;
+    $('update-check').textContent = update.checking ? '正在检查…' : '检查更新';
+    $('update-install').hidden = !update.available;
+    $('update-install').disabled = status.busy || update.checking || !update.supported;
+    $('update-install').textContent = update.busy ? '正在更新…' : '安装更新 ' + update.latestVersion;
+  }
   if (!initialized) { initSettings(status.config); initialized = true; }
   $('item-count').textContent = status.itemCount;
   $('schedule-state').textContent = status.config.enabled ? '已开启' : '未开启';
@@ -42,7 +57,7 @@ function render(status) {
   $('connection-banner').hidden = status.browserConfigured;
   const tokenSaved = status.playwrightTokenSaved ?? (status.config.collector === 'playwright' && status.browserConfigured);
   $('browser-token-state').textContent = tokenSaved ? '连接令牌已保存。输入框留空即可；实际浏览器连接等待首次采集验证。' : '尚未保存连接令牌。粘贴后点击下方「保存设置」。';
-  $('current-stage').textContent = status.busy ? status.jobs.find(j => j.status === 'running')?.stage || '任务正在启动' : '准备就绪';
+  $('current-stage').textContent = update?.busy ? update.message : status.busy ? status.jobs.find(j => j.status === 'running')?.stage || '任务正在启动' : '准备就绪';
   document.querySelectorAll('.run').forEach(button => { button.disabled = status.busy; });
   const reports = status.jobs.map(job => {
     const row = element('article', null, 'report-row'); const text = element('div');
@@ -56,7 +71,7 @@ function render(status) {
   $('notes').replaceChildren(...status.notes.slice().reverse().map(note => { const row = element('article', null, 'panel'); row.append(element('p', note.text)); row.append(element('small', new Date(note.createdAt).toLocaleDateString('zh-CN'))); return row; }));
   $('post-list').replaceChildren(...status.posts.slice().reverse().map(post => { const row = element('article', null, 'report-row'); const text = element('div'); text.append(element('strong', post.title || '已发布作品')); text.append(element('p', platformNames[post.platform] + ' · ' + new Date(post.publishedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))); const link = element('a', '打开作品'); link.href = post.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; row.append(text, link); return row; }));
 }
-async function refresh() { try { render(await api('/api/status')); } catch (error) { showMessage('工作台连接中断：' + error.message + '。可以重新打开「打开工作台.command」。'); } }
+async function refresh() { try { render(await api('/api/status')); } catch (error) { showMessage(current?.updater?.busy ? '工作台正在更新并重新连接，请稍候。已有资料保留。' : '工作台连接中断：' + error.message + '。可以重新打开「打开工作台.command」。'); } }
 async function openReport(id) {
   const result = await api('/api/reports/' + encodeURIComponent(id)); currentReport = result.markdown;
   $('report-text').textContent = currentReport; $('download-report').href = '/api/reports/' + encodeURIComponent(id) + '?download=1'; $('report-view').hidden = false; $('report-view').scrollIntoView({ behavior: 'smooth' });
@@ -81,6 +96,13 @@ $('settings-form').onsubmit = async event => {
   finally { button.disabled = false; }
 };
 $('settings-form').addEventListener('input', () => { if (!$('settings-save').disabled) { $('settings-save').textContent = '保存设置'; $('settings-feedback').hidden = true; } });
+for (const action of ['check', 'install']) $('update-' + action).onclick = async () => {
+  const button = $('update-' + action); button.disabled = true;
+  $('update-feedback').textContent = action === 'check' ? '正在检查新版…' : '正在启动更新，请保持联网。';
+  try { await api('/api/update/' + action, {}); await refresh(); }
+  catch (error) { $('update-feedback').textContent = error.message; $('update-feedback').classList.add('failed'); showMessage(error.message); }
+  finally { button.disabled = Boolean(current?.busy); }
+};
 $('note-form').onsubmit = async event => { event.preventDefault(); try { await api('/api/notes', { text: $('note-text').value }); $('note-text').value = ''; showMessage('真实素材已保存，下轮写稿会参考它。'); await refresh(); } catch (error) { showMessage(error.message); } };
 $('post-form').onsubmit = async event => {
   event.preventDefault();

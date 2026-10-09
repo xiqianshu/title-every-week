@@ -21,7 +21,7 @@ function metricValues(raw) {
   }));
 }
 
-export function createServer(workflow) {
+export function createServer(workflow, updater = null) {
   return http.createServer(async (request, response) => {
     const port = response.socket.localPort;
     const allowedHosts = ['127.0.0.1:' + port, 'localhost:' + port];
@@ -34,6 +34,11 @@ export function createServer(workflow) {
       if (request.method === 'POST') {
         if (request.headers['x-workflow-request'] !== '1' || (request.headers.origin && request.headers.origin !== origin) || !String(request.headers['content-type']).startsWith('application/json')) return json(response, 403, { error: '请从本机工作台发起操作' });
         const input = await body(request);
+        if (url.pathname === '/api/update/check' || url.pathname === '/api/update/install') {
+          if (!updater) throw new Error('当前程序没有启用更新入口');
+          return json(response, url.pathname.endsWith('/install') ? 202 : 200, await (url.pathname.endsWith('/install') ? updater.install() : updater.check()));
+        }
+        if (updater && await updater.busy()) return json(response, 409, { error: '正在更新工作台，请完成后再保存或运行任务；已有资料保留。' });
         if (url.pathname === '/api/config') {
           const config = validateConfig(input.config);
           if (input.playwrightToken) {
@@ -75,7 +80,10 @@ export function createServer(workflow) {
         return json(response, 404, { error: '未找到该操作' });
       }
       if (request.method !== 'GET') return json(response, 405, { error: '不支持该请求方式' });
-      if (url.pathname === '/api/status') return json(response, 200, { application: 'creator-workflow', ...(await workflow.status()) });
+      if (url.pathname === '/api/status') {
+        const status = await workflow.status(), update = updater ? await updater.status() : null;
+        return json(response, 200, { application: 'creator-workflow', ...status, busy: status.busy || Boolean(update?.busy), updater: update });
+      }
       if (url.pathname.startsWith('/api/reports/')) {
         const id = decodeURIComponent(url.pathname.slice('/api/reports/'.length));
         if (!/^[a-z0-9-]+$/.test(id)) throw new Error('报告名称无效');
@@ -89,7 +97,7 @@ export function createServer(workflow) {
       const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'] };
       const asset = assets[url.pathname];
       if (!asset) return json(response, 404, { error: '未找到页面' });
-      response.writeHead(200, { 'Content-Type': asset[1] + '; charset=utf-8' });
+      response.writeHead(200, { 'Content-Type': asset[1] + '; charset=utf-8', 'Cache-Control': 'no-store' });
       response.end(await readFile(path.join(publicRoot, asset[0])));
     } catch (error) { json(response, error.code === 'ENOENT' ? 404 : 400, { error: safeMessage(error) }); }
   });
