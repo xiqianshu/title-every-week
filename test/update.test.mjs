@@ -88,6 +88,26 @@ test('curl transport bounds streamed bytes independently of Content-Length and p
   assert.equal(kills, 1);
 });
 
+test('Mac background download uses the system HTTPS proxy when launchd has no proxy environment', async () => {
+  let args, proxyReads=0;
+  const launcher=(command,input)=>{
+    args=input;const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{};
+    queueMicrotask(()=>{child.stdout.write('downloaded');child.emit('close',0);});return child;
+  };
+  const proxyReader=async()=>{proxyReads++;return {stdout:'<dictionary> {\n HTTPSEnable : 1\n HTTPSProxy : 127.0.0.1\n HTTPSPort : 7890\n}'};};
+  await releaseModule.githubFetch('https://github.com/xiqianshu/title-every-week/raw/test/file.zip',{launcher,platform:'darwin',env:{},proxyReader});
+  assert.equal(proxyReads,1);assert.equal(args[args.indexOf('--proxy')+1],'http://127.0.0.1:7890');
+  assert.ok(!args.includes('--insecure'));
+  proxyReads=0;
+  await releaseModule.githubFetch('https://github.com/xiqianshu/title-every-week/raw/test/file.zip',{launcher,platform:'darwin',env:{HTTPS_PROXY:'http://localhost:9999'},proxyReader});
+  assert.equal(proxyReads,0);assert.ok(!args.includes('--proxy'),'explicit proxy environments retain precedence');
+});
+
+test('system proxy parsing supports SOCKS DNS and rejects invalid proxy settings',()=>{
+  assert.deepEqual(releaseModule.macProxyArgs('SOCKSEnable : 1\nSOCKSProxy : ::1\nSOCKSPort : 7891'),['--proxy','socks5h://[::1]:7891']);
+  for(const input of ['HTTPSEnable : 0\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890','HTTPSEnable : 1\nHTTPSProxy : user@host\nHTTPSPort : 7890','HTTPSEnable : 1\nHTTPSProxy : localhost\nHTTPSPort : 99999'])assert.deepEqual(releaseModule.macProxyArgs(input),[]);
+});
+
 test('package extraction rejects traversal, symlinks, duplicates and oversized output', async () => {
   assert.equal(typeof archiveModule.extractPackage, 'function');
   const root = await mkdtemp(path.join(tmpdir(), 'creator-zip-test-'));

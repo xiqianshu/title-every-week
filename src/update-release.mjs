@@ -1,15 +1,31 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { safeMessage } from './runtime.mjs';
+import { isIP } from 'node:net';
+import { safeMessage, runProcess } from './runtime.mjs';
 
 const repository = 'https://github.com/xiqianshu/title-every-week/raw/';
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-// macOS includes curl. It supports proxy environments without relying on Node DNS/proxy defaults.
-export async function githubFetch(url, { launcher = spawn } = {}) {
+export function macProxyArgs(text) {
+  const fields = Object.fromEntries([...String(text).matchAll(/^\s*([A-Za-z]+)\s*:\s*(\S+)\s*$/gm)].map(match => [match[1], match[2]]));
+  for (const name of ['HTTPS', 'HTTP', 'SOCKS']) {
+    if (fields[name + 'Enable'] !== '1') continue;
+    const host = String(fields[name + 'Proxy'] || '').replace(/^\[|\]$/g, ''), port = fields[name + 'Port'];
+    if (!(isIP(host) || /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(host)) || !/^\d+$/.test(port || '') || Number(port) < 1 || Number(port) > 65535) continue;
+    return ['--proxy', (name === 'SOCKS' ? 'socks5h://' : 'http://') + (isIP(host) === 6 ? '[' + host + ']' : host) + ':' + port];
+  }
+  return [];
+}
+// launchd does not inherit a terminal's proxy environment. Read enabled macOS
+// manual system proxies, without changing network settings or TLS verification.
+export async function githubFetch(url, { launcher = spawn, platform = process.platform, env = process.env, proxyReader = runProcess } = {}) {
   if (!String(url).startsWith(repository)) throw new Error('更新仅能从固定的 GitHub 仓库下载');
   const limit = String(url).endsWith('/latest.json') ? 16000 : 2 * 1024 * 1024;
+  let proxy = [];
+  if (platform === 'darwin' && !['HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy'].some(key => env[key])) {
+    try { proxy = macProxyArgs((await proxyReader('/usr/sbin/scutil', ['--proxy'], { timeoutMs: 2000, maxBytes: 16000 })).stdout); } catch {}
+  }
   const bytes = await new Promise((resolve, reject) => {
-    const child = launcher('/usr/bin/curl', ['--disable', '--fail', '--location', '--silent', '--show-error', '--max-time', '30', '--proto', '=https', '--proto-redir', '=https', '--max-filesize', String(limit), '--header', 'Cache-Control: no-cache', String(url)], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = launcher('/usr/bin/curl', ['--disable', ...proxy, '--fail', '--location', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '30', '--proto', '=https', '--proto-redir', '=https', '--max-filesize', String(limit), '--header', 'Cache-Control: no-cache', String(url)], { env, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks = []; let size = 0, stderr = '', failure, killTimer;
     const stop = message => {
       if (failure) return;
