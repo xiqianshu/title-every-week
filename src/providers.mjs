@@ -2,8 +2,10 @@ import path from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { normalizeItem } from './model.mjs';
-import { runProcess, safeMessage } from './runtime.mjs';
+import { runProcess, safeMessage, cancelProcesses } from './runtime.mjs';
 import { buildPrompt, collectionPrompt, validatePack } from './prompts.mjs';
+import { collectPublicSources } from './public-sources.mjs';
+import { researchPlanPrompt, insightsPrompt, validateResearchPlan, validateInsights } from './research.mjs';
 
 export function validateCollection(output, sources, at) {
   if (!Array.isArray(output?.sources) || !Array.isArray(output?.items)) throw new Error('采集输出格式无效');
@@ -40,8 +42,12 @@ export function validateCollection(output, sources, at) {
 
 export class Providers {
   constructor(appRoot, store, runner = runProcess) { this.appRoot = appRoot; this.store = store; this.runner = runner; }
+  begin() { this.stopped = false; }
+  stop() { this.stopped = true; cancelProcesses(); }
+  checkRunning() { if (this.stopped) throw new Error('你已停止当前任务'); }
   binary(name) { return path.join(this.appRoot, 'node_modules', ...(name === 'codex' ? ['@openai', 'codex', 'bin', 'codex.js'] : ['@jackwener', 'opencli', 'dist', 'src', 'main.js'])); }
   async codex(prompt, schema, browser = false) {
+    this.checkRunning();
     const directory = path.join(this.store.root, 'runs', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const target = path.join(directory, 'result.json');
@@ -53,29 +59,52 @@ export class Providers {
       env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = secrets.playwrightToken;
       const config = {
         'mcp_servers.playwright.command': process.execPath,
-        'mcp_servers.playwright.args': [path.join(this.appRoot, 'node_modules', '@playwright', 'mcp', 'cli.js'), '--extension'],
+        'mcp_servers.playwright.args': [path.join(this.appRoot, 'src', 'browser-bridge.mjs')],
         'mcp_servers.playwright.env_vars': ['PLAYWRIGHT_MCP_EXTENSION_TOKEN'],
-        'mcp_servers.playwright.enabled_tools': ['browser_tabs', 'browser_snapshot', 'browser_find', 'browser_navigate', 'browser_wait_for', 'browser_take_screenshot'],
+        'mcp_servers.playwright.enabled_tools': ['browser_tabs', 'browser_read_page', 'browser_navigate', 'browser_wait_for'],
         'mcp_servers.playwright.default_tools_approval_mode': 'approve',
       };
       for (const [key, value] of Object.entries(config)) args.push('-c', key + '=' + JSON.stringify(value));
     }
     args.push('-');
-    await this.runner(process.execPath, [this.binary('codex'), ...args], { cwd: directory, input: prompt, env, timeoutMs: browser ? 480000 : 360000 });
+    this.checkRunning();
+    await this.runner(process.execPath, [this.binary('codex'), ...args], { cwd: directory, input: prompt, env, timeoutMs: browser ? 240000 : 360000 });
     const result = await readFile(target, 'utf8');
     if (result.length > 2000000) throw new Error('结构化报告超过容量限制');
     try { return JSON.parse(result); } catch { throw new Error('模型没有返回有效的结构化报告'); }
   }
-  async collect(sources, config) {
+  async collect(sources, config, onProgress = async () => {}) {
     const at = new Date().toISOString();
-    if (config.collector === 'playwright') return validateCollection(await this.codex(collectionPrompt(sources), 'collection', true), sources, at);
+    if (config.collector === 'playwright') {
+      const result = { sources: [], items: [] }, blocked = new Set();
+      // Keep completed batches when another page stalls or a later model call fails.
+      for (let start = 0; start < sources.length; start += 3) {
+        this.checkRunning();
+        const next = sources.slice(start, start + 3), batch = next.filter(s => !blocked.has(s.platform));
+        result.sources.push(...next.filter(s => blocked.has(s.platform)).map(s => ({ ...s, status: 'blocked', count: 0, message: '该平台需要处理登录或验证，未继续访问' })));
+        if (batch.length) {
+          try {
+            const collected = validateCollection(await this.codex(collectionPrompt(batch), 'collection', true), batch, new Date().toISOString());
+            result.sources.push(...collected.sources); result.items.push(...collected.items);
+            for (const s of collected.sources) if (s.status === 'blocked') blocked.add(s.platform);
+          } catch (error) { result.sources.push(...batch.map(s => ({ ...s, status: 'error', count: 0, message: safeMessage(error) }))); }
+        }
+        await onProgress({ completed: Math.min(start + 3, sources.length), total: sources.length, itemCount: new Set(result.items.map(i => i.id)).size, sources: result.sources.slice(), items: result.items.slice() });
+      }
+      return result;
+    }
     const output = { sources: [], items: [] };
     const blocked = new Set();
     for (const source of sources) {
+      this.checkRunning();
       if (blocked.has(source.platform)) { output.sources.push({ sourceId: source.id, status: 'blocked', message: '该平台需要手动处理登录或验证，已停止后续访问' }); continue; }
       try {
         let args;
-        if (source.kind === 'search') args = [source.platform === 'douyin' ? 'douyin' : 'xiaohongshu', 'search', source.query, '--limit', String(source.limit)];
+        if (source.kind === 'discovery') {
+          if (source.platform === 'douyin') throw new Error('OpenCLI 未提供抖音发现页作品读取；公开热榜独立采集，继续其他搜索');
+          args = ['xiaohongshu', 'feed', '--limit', String(source.limit)];
+        }
+        else if (source.kind === 'search') args = [source.platform === 'douyin' ? 'douyin' : 'xiaohongshu', 'search', source.query, '--limit', String(source.limit)];
         else if (source.kind === 'account') args = [source.platform === 'douyin' ? 'douyin' : 'xiaohongshu', source.platform === 'douyin' ? 'user-videos' : 'user', source.url, '--limit', String(source.limit)];
         else if (source.platform === 'xiaohongshu') args = ['xiaohongshu', 'note', source.url];
         else args = ['web', 'read', '--url', source.url, '--download-images', 'false', '--stdout', 'true'];
@@ -108,5 +137,8 @@ export class Providers {
     }
     return output;
   }
+  async publicResearch() { return collectPublicSources(undefined, () => this.checkRunning()); }
+  async planResearch(signals, config) { return validateResearchPlan(await this.codex(researchPlanPrompt(signals, config.profile), 'research-plan'), signals); }
+  async analyze(bundle) { return validateInsights(await this.codex(insightsPrompt(bundle), 'insights'), bundle); }
   async generate(bundle, kind) { return validatePack(await this.codex(buildPrompt(bundle, kind), kind), bundle, kind); }
 }

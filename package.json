@@ -1,9 +1,11 @@
 {
   "name": "creator-workflow",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node src/cli.mjs serve",
     "test": "node --test test/*.test.mjs",

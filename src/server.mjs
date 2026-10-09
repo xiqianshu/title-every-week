@@ -39,6 +39,7 @@ export function createServer(workflow, updater = null) {
           return json(response, url.pathname.endsWith('/install') ? 202 : 200, await (url.pathname.endsWith('/install') ? updater.install() : updater.check()));
         }
         if (updater && await updater.busy()) return json(response, 409, { error: '正在更新工作台，请完成后再保存或运行任务；已有资料保留。' });
+        if (url.pathname === '/api/stop') return json(response, 200, await workflow.stop());
         if (url.pathname === '/api/config') {
           const config = validateConfig(input.config);
           if (input.playwrightToken) {

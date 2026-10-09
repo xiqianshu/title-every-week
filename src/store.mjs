@@ -13,11 +13,13 @@ export class Store {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(path.join(this.root, 'reports'), { recursive: true, mode: 0o700 });
     await mkdir(path.join(this.root, 'runs'), { recursive: true, mode: 0o700 });
-    const defaults = { config: defaultConfig(), secrets: { playwrightToken: '' }, notes: [], posts: [], items: [], snapshots: [], jobs: [], updater: { status: 'idle', message: '' }, state: { lastDaily: null, lastWeekly: null } };
+    const defaults = { config: defaultConfig(), secrets: { playwrightToken: '' }, notes: [], posts: [], items: [], signals: [], snapshots: [], jobs: [], updater: { status: 'idle', message: '' }, state: { lastDaily: null, lastWeekly: null } };
     for (const [name, value] of Object.entries(defaults)) {
       try { await writeFile(this.file(name), JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 }); }
       catch (e) { if (e.code !== 'EEXIST') throw e; }
     }
+    const config = await this.read('config');
+    if (config.broadResearch == null) await this.update('config', value => ({ ...value, broadResearch: true, limits: { ...value.limits, maxSources: value.limits?.maxSources === 10 ? 12 : value.limits?.maxSources } }));
   }
   async read(name) { return JSON.parse(await readFile(this.file(name), 'utf8')); }
   async update(name, transform) {

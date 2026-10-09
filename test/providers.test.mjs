@@ -22,6 +22,11 @@ test('subprocess arguments are passed literally without invoking a shell', async
   assert.equal(result.stdout, value);
 });
 
+test('Chinese public-source text survives UTF-8 characters split across process chunks', async () => {
+  const result = await runtime.runProcess(process.execPath, ['-e', "const b=Buffer.from('真实资料');process.stdout.write(b.subarray(0,1));setTimeout(()=>process.stdout.write(b.subarray(1)),30)"], { timeoutMs: 3000 });
+  assert.equal(result.stdout, '真实资料');
+});
+
 test('unresponsive subprocess is terminated within its deadline', async () => {
   assert.equal(typeof runtime.runProcess, 'function');
   const started = Date.now();
@@ -71,6 +76,18 @@ test('stopping the background service cancels its active subprocesses', async ()
   await new Promise(resolve => setTimeout(resolve, 80));
   runtime.cancelProcesses();
   await assert.rejects(running, /停止/);
+});
+
+test('stop during asynchronous browser setup cannot launch a new child process', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'creator-provider-stop-'));
+  let release, started; const gate = new Promise(resolve => release=resolve), ready=new Promise(resolve => started=resolve);
+  try {
+    const store = new Store(root); await store.init();
+    const originalRead=store.read.bind(store);store.read=async name=>{ if(name==='secrets'){started();await gate;return {playwrightToken:'local-private'};} return originalRead(name); };
+    let calls=0; const provider=new providers.Providers(path.resolve('.'),store,async()=>{calls++;throw new Error('意外启动子进程');});
+    const task=provider.codex('读取页面','collection',true);await ready;provider.stop();release();
+    await assert.rejects(task,/停止/);assert.equal(calls,0);
+  } finally {release();await rm(root,{recursive:true,force:true});}
 });
 
 test('weekly content rejects fabricated evidence and keeps personal drafts pending', () => {

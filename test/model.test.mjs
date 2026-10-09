@@ -80,13 +80,13 @@ test('empty observations cannot mask a later usable backend observation', () => 
 test('a growing post queue rotates due posts and retains research from both platforms', () => {
   const posts = Array.from({ length: 16 }, (_, i) => ({ id: 'p' + i, platform: 'douyin', url: 'https://www.douyin.com/video/' + i, publishedAt: '2026-10-01T01:00:00Z' }));
   const config = model.defaultConfig();
-  const first = model.makeSources(config, posts, { now: new Date('2026-10-08T02:00:00Z') });
-  assert.ok(first.some(s => s.kind === 'search' && s.platform === 'xiaohongshu'));
-  assert.ok(first.some(s => s.kind === 'published'));
-  const attempts = Object.fromEntries(first.filter(s => s.postId).map(s => [s.postId, '2026-10-08T02:00:00Z']));
-  const next = model.makeSources(config, posts, { now: new Date('2026-10-09T02:00:00Z'), attempts });
-  assert.ok(next.some(s => s.postId === 'p6'));
-  Object.assign(attempts, Object.fromEntries(next.filter(s => s.postId).map(s => [s.postId, '2026-10-09T02:00:00Z'])));
-  const third = model.makeSources(config, posts, { now: new Date('2026-10-10T02:00:00Z'), attempts });
-  assert.ok(third.some(s => s.postId === 'p15'));
+  const attempts = {}, observed = new Set();
+  for (let day = 8; day < 12; day++) {
+    const now = new Date('2026-10-' + day.toString().padStart(2,'0') + 'T02:00:00Z');
+    const requests = model.makeSources(config, posts, { now, attempts });
+    assert.equal(requests.filter(s => s.kind === 'discovery').length, 2);
+    assert.equal(requests.filter(s => s.kind === 'search').length, 6, 'own-post refresh must not crowd out three directions on both platforms');
+    for (const s of requests.filter(s => s.postId)) { observed.add(s.postId); attempts[s.postId] = now.toISOString(); }
+  }
+  assert.equal(observed.size, 16, 'due posts still rotate fairly through the remaining budget');
 });

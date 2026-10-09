@@ -23,8 +23,9 @@ export function runProcess(command, args, { cwd, input = '', env = {}, timeoutMs
     };
     active.add(stop);
     const timer = setTimeout(() => stop('任务超时，已停止本次执行；不会无限重试'), timeoutMs);
-    child.stdout.on('data', chunk => { size += chunk.length; if (size > maxBytes) stop('任务输出超过容量限制'); else stdout += chunk.toString(); });
-    child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8000); });
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { size += Buffer.byteLength(chunk); if (size > maxBytes) stop('任务输出超过容量限制'); else stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
     child.stdin.on('error', () => {});
     child.on('error', error => { active.delete(stop); clearTimeout(timer); reject(new Error('无法启动所需程序：' + safeMessage(error))); });
     child.on('close', code => {
