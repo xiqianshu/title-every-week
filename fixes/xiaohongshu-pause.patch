@@ -1,0 +1,333 @@
+diff --git a/public/app.js b/public/app.js
+--- a/public/app.js
++++ b/public/app.js
+@@ -302,9 +302,11 @@
+   try {
+     const config = { ...current.config, broadResearch: $('broad-research').checked, pausedPlatforms: [...($('collect-douyin').checked ? [] : ['douyin']), ...($('collect-xiaohongshu').checked ? [] : ['xiaohongshu'])], collector: $('collector').value, scheduleHour: Number($('schedule-hour').value), enabled: $('auto-enabled').checked, keywords: $('keywords').value.split(/[,，\n]/).map(s => s.trim()).filter(Boolean), accounts: sourcesFrom('accounts'), links: sourcesFrom('links'), profile: { ...current.config.profile, goal: $('profile-goal').value.trim(), voice: $('profile-voice').value.trim(), boundaries: $('profile-boundaries').value.trim() } };
+     let playwrightToken = $('browser-token').value.trim(); if (playwrightToken.startsWith('PLAYWRIGHT_MCP_EXTENSION_TOKEN=')) playwrightToken = playwrightToken.slice('PLAYWRIGHT_MCP_EXTENSION_TOKEN='.length);
+-    await api('/api/config', { config, playwrightToken }); $('browser-token').value = ''; button.textContent = '已保存 ✓';
+-    settingsFeedback('设置已保存。令牌输入框已清空以隐藏内容，已有令牌会保留。下一步回到概览，点击「研究热门与选题」。');
+-    showMessage('设置已保存。可以回到概览，点击「研究热门与选题」。'); await refresh();
++    const result = await api('/api/config', { config, playwrightToken }); $('browser-token').value = ''; button.textContent = '已保存 ✓';
++    if (result.stopped) $('auto-enabled').checked = false;
++    const message = result.stopped ? '设置已保存。已停止当前任务并暂停自动运行，已保存资料保留。' : '设置已保存。可以回到概览，点击「研究热门与选题」。';
++    settingsFeedback(message + ' 令牌输入框已清空以隐藏内容，已有令牌会保留。');
++    showMessage(message); await refresh();
+     $('settings-feedback').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+   } catch (error) { button.textContent = '保存设置'; settingsFeedback('设置未保存：' + error.message, true); showMessage(error.message); }
+   finally { button.disabled = false; }
+diff --git a/src/browser-bridge.mjs b/src/browser-bridge.mjs
+--- a/src/browser-bridge.mjs
++++ b/src/browser-bridge.mjs
+@@ -1,7 +1,14 @@
+ import { spawn } from 'node:child_process';
+ import { createInterface } from 'node:readline';
+ import { fileURLToPath } from 'node:url';
+-import { checkBrowserCall, pageReadCode, mutePageCode, currentPageCode } from './browser-read.mjs';
++import { checkBrowserCall, pageReadCode, mutePageCode, currentPageCode, scopePageCode } from './browser-read.mjs';
++
++let platforms;
++try {
++  platforms = JSON.parse(process.env.CREATOR_BROWSER_PLATFORMS || '[]');
++  if (!Array.isArray(platforms) || platforms.some(platform => !['douyin', 'xiaohongshu'].includes(platform))) throw new Error();
++} catch { process.stderr.write('浏览器平台范围无效，未启动连接\n'); process.exit(1); }
++const scopedRead = scopePageCode(pageReadCode, platforms), scopedCurrent = scopePageCode(currentPageCode, platforms), scopedMute = scopePageCode(mutePageCode, platforms);
+ 
+ // MCP is newline-delimited JSON-RPC. Proxy the pinned server and add one fixed reader.
+ const upstream = spawn(process.execPath, [fileURLToPath(new URL('../node_modules/@playwright/mcp/cli.js', import.meta.url)), '--extension', '--snapshot-mode', 'none'], { shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+@@ -16,10 +23,10 @@
+   catch { error(null, '无效 MCP 请求'); return; }
+   if (message.method === 'tools/list') listings.add(message.id);
+   if (message.method === 'tools/call') {
+-    try { checkBrowserCall(message.params.name, message.params.arguments); }
++    try { checkBrowserCall(message.params.name, message.params.arguments, platforms); }
+     catch (e) { error(message.id, e.message); return; }
+-    if (message.params.name === 'browser_read_page') message.params = { name: 'browser_evaluate', arguments: { function: pageReadCode } };
+-    if (message.params.name === 'browser_tabs') message.params = { name: 'browser_evaluate', arguments: { function: currentPageCode } };
++    if (message.params.name === 'browser_read_page') message.params = { name: 'browser_evaluate', arguments: { function: scopedRead } };
++    if (message.params.name === 'browser_tabs') message.params = { name: 'browser_evaluate', arguments: { function: scopedCurrent } };
+     if (message.params.name === 'browser_navigate') navigation.add(message.id);
+     message.params.arguments = { ...message.params.arguments, _meta: { raw: true, json: true } };
+   }
+@@ -31,7 +38,7 @@
+     if (muting.has(message.id)) { send(muting.get(message.id)); muting.delete(message.id); return; }
+     if (navigation.delete(message.id)) {
+       const id = 'creator-internal-mute-' + ++serial; muting.set(id, message);
+-      upstream.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_evaluate', arguments: { function: mutePageCode, _meta: { raw: true, json: true } } } }) + '\n'); return;
++      upstream.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_evaluate', arguments: { function: scopedMute, _meta: { raw: true, json: true } } } }) + '\n'); return;
+     }
+     if (listings.delete(message.id) && Array.isArray(message.result?.tools)) message.result.tools = [
+       ...message.result.tools.filter(t => names.has(t.name)).map(t => t.name === 'browser_wait_for' ? { ...t, description: '等待最多五秒加载，不返回页面快照', inputSchema: { type: 'object', required: ['time'], properties: { time: { type: 'number', minimum: 0.1, maximum: 5 } }, additionalProperties: false } } : t),
+diff --git a/src/browser-read.mjs b/src/browser-read.mjs
+--- a/src/browser-read.mjs
++++ b/src/browser-read.mjs
+@@ -1,15 +1,23 @@
+ const allowed = new Set(['browser_tabs', 'browser_navigate', 'browser_wait_for', 'browser_read_page']);
+-export function checkBrowserCall(name, args = {}) {
++export function checkBrowserCall(name, args = {}, platforms = ['douyin', 'xiaohongshu']) {
+   if (!allowed.has(name)) throw new Error('此连接只提供页面读取工具');
++  if (!platforms.length) throw new Error('所有平台均已暂停，没有允许访问的平台');
+   if (name === 'browser_tabs' && args.action !== 'list') throw new Error('采集连接不关闭或修改其他标签页');
+   if (name === 'browser_navigate') {
+     const url = new URL(args.url);
+     if (url.protocol !== 'https:' || url.username || url.password || url.port || !['www.douyin.com', 'douyin.com', 'www.xiaohongshu.com', 'xiaohongshu.com'].includes(url.hostname)) throw new Error('仅访问两平台的公开研究页面');
++    if (!platforms.includes(url.hostname.endsWith('douyin.com') ? 'douyin' : 'xiaohongshu')) throw new Error('该平台已暂停或不在本批允许访问的平台中');
+     const routes = url.hostname.endsWith('douyin.com') ? /^\/(?:$|(?:video|hot|search|user|jingxuan)(?:\/|$))/ : /^\/(?:$|(?:explore|search_result|note|discovery\/item|user\/profile)(?:\/|$))/;
+     if (!routes.test(url.pathname)) throw new Error('此页面不属于公开作品、搜索或发现入口');
+   }
+   if (name === 'browser_wait_for' && args.time != null && (args.time < 0 || args.time > 5)) throw new Error('单次等待最多五秒');
+   if (name === 'browser_wait_for' && (args.text || args.textGone || !args.time)) throw new Error('仅提供有限时间等待，不读取其他页面的文本');
++}
++
++// Guard before the fixed reader touches the page DOM, including an already-open tab.
++export function scopePageCode(code, platforms) {
++  const hosts = platforms.filter(platform => ['douyin', 'xiaohongshu'].includes(platform)).flatMap(platform => [platform + '.com', 'www.' + platform + '.com']);
++  return '() => { if (!' + JSON.stringify(hosts) + '.includes(location.hostname)) return { error: "当前平台已暂停或不在本批允许访问范围，未读取页面" }; return (' + code + ')(); }';
+ }
+ 
+ // Fixed DOM reader; its only UI change is muting media in the collection page.
+diff --git a/src/model.mjs b/src/model.mjs
+--- a/src/model.mjs
++++ b/src/model.mjs
+@@ -59,15 +59,22 @@
+   };
+ }
+ 
++export function activePlatforms(config) {
++  const paused = new Set(config.pausedPlatforms ?? ['xiaohongshu']);
++  return ['douyin', 'xiaohongshu'].filter(platform => !paused.has(platform));
++}
++
+ export function makeSources(config, posts = [], { now = new Date(), snapshots = [], attempts = {}, reviewOnly = false, researchQueries = [] } = {}) {
+   const sources = [];
++  const active = new Set(activePlatforms(config));
+   const add = input => {
++    if (!active.has(input.platform)) return;
+     if (input.url) platformUrl(input.url, input.platform);
+     const identity = input.url || input.query;
+     sources.push({ ...input, id: 's-' + digest(input.platform + ':' + input.kind + ':' + identity), limit: input.kind === 'published' ? 1 : Math.min(5, Math.max(1, config.limits?.perSource || 5)) });
+   };
+   const pending = new Set(reviewWindows(posts, snapshots, now).filter(r => r.status === 'awaiting_data').map(r => r.postId));
+-  const queued = posts.filter(p => pending.has(p.id)).sort((a, b) => (Date.parse(attempts[a.id] || '') || 0) - (Date.parse(attempts[b.id] || '') || 0));
++  const queued = posts.filter(p => active.has(p.platform) && pending.has(p.id)).sort((a, b) => (Date.parse(attempts[a.id] || '') || 0) - (Date.parse(attempts[b.id] || '') || 0));
+   const max = config.limits?.maxSources || 12;
+   const researchBudget = config.broadResearch !== false ? 8 : 4;
+   const ownBudget = reviewOnly ? max : Math.min(4, Math.max(0, max - researchBudget));
+@@ -92,8 +99,7 @@
+   const offset = references.length ? day % references.length : 0;
+   for (const ref of [...references.slice(offset), ...references.slice(0, offset)]) add(ref);
+   const unique = [...new Map(sources.map(s => [s.id, s])).values()];
+-  const paused = new Set(config.pausedPlatforms || []);
+-  return [...own, ...unique].filter(s => !paused.has(s.platform)).slice(0, max);
++  return [...own, ...unique].slice(0, max);
+ }
+ 
+ export function validateConfig(config) {
+@@ -102,6 +108,7 @@
+   if (!Array.isArray(config.keywords) || config.keywords.length > 8) throw new Error('补充关键词最多八个');
+   if (config.broadResearch != null && typeof config.broadResearch !== 'boolean') throw new Error('广泛研究开关无效');
+   if (config.pausedPlatforms != null && (!Array.isArray(config.pausedPlatforms) || config.pausedPlatforms.some(p => !['douyin', 'xiaohongshu'].includes(p)))) throw new Error('暂停采集的平台设置无效');
++  config.pausedPlatforms ??= ['xiaohongshu'];
+   if (!Array.isArray(config.accounts) || config.accounts.length > 6) throw new Error('对标账号最多六个');
+   if (!Array.isArray(config.links) || config.links.length > 6) throw new Error('参考作品最多六个');
+   if (!Number.isInteger(config.scheduleHour) || config.scheduleHour < 0 || config.scheduleHour > 23) throw new Error('每日运行小时应为 0—23');
+@@ -133,7 +140,7 @@
+ 
+ export function defaultConfig() {
+   return {
+-    collector: 'playwright', enabled: false, scheduleHour: 9, broadResearch: true,
++    collector: 'playwright', enabled: false, scheduleHour: 9, broadResearch: true, pausedPlatforms: ['xiaohongshu'],
+     keywords: ['AI 实际使用', 'AI 个人成长'], accounts: [],
+     links: [
+       { platform: 'douyin', url: 'https://www.douyin.com/video/7690817035621666111', label: '用户指定对标的置顶作品' },
+diff --git a/src/pipeline.mjs b/src/pipeline.mjs
+--- a/src/pipeline.mjs
++++ b/src/pipeline.mjs
+@@ -1,7 +1,7 @@
+ import { randomUUID } from 'node:crypto';
+ import { readFile } from 'node:fs/promises';
+ import path from 'node:path';
+-import { makeSources, reviewWindows } from './model.mjs';
++import { makeSources, reviewWindows, activePlatforms } from './model.mjs';
+ import { validatePack } from './prompts.mjs';
+ import { safeMessage } from './runtime.mjs';
+ import { scheduleDue, shanghaiDate } from './schedule.mjs';
+@@ -13,6 +13,7 @@
+ export function renderReport(report) {
+   const lines = ['# 内容工作流报告', '', '生成时间：' + new Date(report.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + '（北京时间）', '', '任务状态：' + ({ success: '完成', partial: '部分来源未取得', failed: '本次未完成' }[report.status] || report.status), ''];
+   if (report.error) lines.push('原因：' + report.error, '');
++  for (const platform of report.pausedPlatforms || []) lines.push(label[platform] + '自动采集已暂停，本轮未访问或采样该平台；其稿件属于内容适配，不能据此确认平台热度。', '');
+   if (report.research) {
+     lines.push('## 本轮研究范围', '', '公开热榜／行业讨论 → 自动扩展搜索 → 两平台作品验证 → 选题筛选。指定账号与作品仅作补充。所有数据均为有限样本，不代表整个平台。', '');
+     for (const source of report.research.sources) lines.push('- ' + source.label + (source.optional ? '（可选来源）' : '') + '：' + source.status + '；' + source.count + ' 条' + (source.message ? '；' + source.message : ''));
+@@ -99,13 +100,14 @@
+     this.busy = true; this.stopped = false; this.providers.begin?.();
+     let release;
+     const job = { id: 'job-' + Date.now() + '-' + randomUUID().slice(0, 8), kind, status: 'running', stage: '准备任务', createdAt: new Date().toISOString(), reportId: null };
+-    let collection = { sources: [], items: [] }, bundle, report;
++    let collection = { sources: [], items: [] }, bundle, report, pausedPlatforms = [];
+     let research = { sources: [], signals: [] }, researchPlan = null, insights = null, coverage = {}, authors = [];
+     const researchNotes = [];
+     try {
+       release = await this.store.lock();
+       await this.updateJob(job);
+       const [config, posts] = await Promise.all([this.store.read('config'), this.store.read('posts')]);
++      pausedPlatforms = ['douyin', 'xiaohongshu'].filter(platform => !activePlatforms(config).includes(platform));
+       if (kind !== 'review' && config.broadResearch !== false && this.providers.publicResearch) {
+         job.stage = '正在收集公开热榜与行业讨论'; await this.updateJob(job);
+         try { research = await this.providers.publicResearch(); }
+@@ -123,14 +125,14 @@
+       const sources = makeSources(config, posts, { snapshots: await this.store.read('snapshots'), attempts: sourceState.sourceAttempts, reviewOnly: kind === 'review', researchQueries: researchPlan?.queries.map(q => q.query) || [] });
+       const selected = kind === 'review' ? sources.filter(s => s.kind === 'published') : sources;
+       await this.store.update('state', value => ({ ...value, sourceAttempts: { ...value.sourceAttempts, ...Object.fromEntries(selected.filter(s => s.postId).map(s => [s.postId, new Date().toISOString()])) } }));
+-      job.stage = '正在读取两平台页面'; await this.updateJob(job);
++      job.stage = '正在读取已开启平台的页面'; await this.updateJob(job);
+       if (selected.length) {
+         try { collection = await this.providers.collect(selected, config, async progress => {
+           if (progress.items) {
+             collection = { sources: progress.sources, items: progress.items };
+             await this.store.update('items', rows => [...new Map([...rows, ...progress.items].map(i => [i.id, i])).values()].slice(-500));
+           }
+-          job.stage = '两平台研究：已处理 ' + progress.completed + '/' + progress.total + ' 个来源，取得 ' + progress.itemCount + ' 条作品'; await this.updateJob(job); this.checkRunning();
++          job.stage = '平台研究：已处理 ' + progress.completed + '/' + progress.total + ' 个来源，取得 ' + progress.itemCount + ' 条作品'; await this.updateJob(job); this.checkRunning();
+         }); }
+         catch (error) { collection.sources.push(...selected.filter(s => !collection.sources.some(done => done.id === s.id)).map(s => ({ ...s, status: 'error', count: 0, message: safeMessage(error) }))); }
+       }
+@@ -146,7 +148,7 @@
+       const state = await this.store.read('state');
+       let previousReview = null;
+       if (state.lastReviewId) { try { previousReview = JSON.parse(await readFile(path.join(this.store.root, 'reports', state.lastReviewId + '.json'), 'utf8')).review; } catch {} }
+-      bundle = { profile: config.profile, notes: (await this.store.read('notes')).slice(-30), items: [...new Map(collection.items.map(i => [i.id, i])).values()], signals: research.signals, coverage, researchPlan, reviews: reviewWindows(posts, snapshots), previousReview };
++      bundle = { profile: config.profile, pausedPlatforms, notes: (await this.store.read('notes')).slice(-30), items: [...new Map(collection.items.map(i => [i.id, i])).values()], signals: research.signals, coverage, researchPlan, reviews: reviewWindows(posts, snapshots), previousReview };
+       if (kind !== 'review' && this.providers.analyze) {
+         job.stage = '正在比较话题证据、账号样本并筛选候选'; await this.updateJob(job);
+         try { insights = validateInsights(await this.providers.analyze(bundle), bundle); }
+@@ -164,10 +166,9 @@
+         else review = { summary: posts.length ? '尚无可用于 72 小时或 7 天复盘的真实指标快照。' : '尚未登记已发布内容。首次发布后在工作台记录链接和时间，即可开始自动跟踪。', findings: [], nextWeekAdvice: posts.length ? ['等待观察窗口到期；公开页面未提供的指标可以在发布记录中补充。'] : ['登记第一篇真实发布内容。'] };
+       }
+       this.checkRunning();
+-      const pausedPlatforms = new Set(config.pausedPlatforms || []);
+-      const missingCoverage = kind !== 'review' && ['douyin', 'xiaohongshu'].some(p => !pausedPlatforms.has(p) && !coverage[p]);
++      const missingCoverage = kind !== 'review' && activePlatforms(config).some(p => !coverage[p]);
+       job.status = collection.sources.some(s => ['blocked', 'error'].includes(s.status)) || research.sources.some(s => s.status !== 'ok' && !s.optional) || researchNotes.length || missingCoverage ? 'partial' : 'success';
+-      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: job.status, collection, evidence: bundle.items, research, researchPlan, researchNotes, insights, coverage, authors, pack, review, windows: bundle.reviews };
++      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: job.status, pausedPlatforms, collection, evidence: bundle.items, research, researchPlan, researchNotes, insights, coverage, authors, pack, review, windows: bundle.reviews };
+       await this.store.saveReport(job.id, report, renderReport(report));
+       job.reportId = job.id;
+       state.lastCollectionId = job.id;
+@@ -178,7 +179,7 @@
+     } catch (error) {
+       if (!release) throw error;
+       job.status = 'failed'; job.stage = this.stopped ? '本次任务已停止' : '本次任务未完成'; job.error = safeMessage(error);
+-      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: 'failed', collection, evidence: collection.items, research, researchPlan, researchNotes, insights, coverage, authors, error: job.error };
++      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: 'failed', pausedPlatforms, collection, evidence: collection.items, research, researchPlan, researchNotes, insights, coverage, authors, error: job.error };
+       await this.store.saveReport(job.id, report, renderReport(report));
+       job.reportId = job.id;
+     } finally {
+diff --git a/src/providers.mjs b/src/providers.mjs
+--- a/src/providers.mjs
++++ b/src/providers.mjs
+@@ -1,7 +1,7 @@
+ import path from 'node:path';
+ import { mkdir, readFile } from 'node:fs/promises';
+ import { randomUUID } from 'node:crypto';
+-import { normalizeItem } from './model.mjs';
++import { normalizeItem, activePlatforms } from './model.mjs';
+ import { runProcess, safeMessage, cancelProcesses } from './runtime.mjs';
+ import { buildPrompt, collectionPrompt, validatePack } from './prompts.mjs';
+ import { collectPublicSources } from './public-sources.mjs';
+@@ -46,7 +46,7 @@
+   stop() { this.stopped = true; cancelProcesses(); }
+   checkRunning() { if (this.stopped) throw new Error('你已停止当前任务'); }
+   binary(name) { return path.join(this.appRoot, 'node_modules', ...(name === 'codex' ? ['@openai', 'codex', 'bin', 'codex.js'] : ['@jackwener', 'opencli', 'dist', 'src', 'main.js'])); }
+-  async codex(prompt, schema, browser = false) {
++  async codex(prompt, schema, browser = false, requestedPlatforms = ['douyin', 'xiaohongshu']) {
+     this.checkRunning();
+     const directory = path.join(this.store.root, 'runs', randomUUID());
+     await mkdir(directory, { recursive: true, mode: 0o700 });
+@@ -69,12 +69,16 @@
+       env.OPENCODE_GO_API_KEY = backend.apiKey;
+     }
+     if (browser) {
++      const platforms = activePlatforms(await this.store.read('config')).filter(platform => requestedPlatforms.includes(platform));
++      this.checkRunning();
++      if (!platforms.length) throw new Error('本次请求的平台已暂停，未启动浏览器连接');
+       if (!secrets.playwrightToken) throw new Error('请先在工作台填写 Playwright 扩展连接令牌；本次未启动浏览器连接');
+       env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = secrets.playwrightToken;
++      env.CREATOR_BROWSER_PLATFORMS = JSON.stringify(platforms);
+       const config = {
+         'mcp_servers.playwright.command': process.execPath,
+         'mcp_servers.playwright.args': [path.join(this.appRoot, 'src', 'browser-bridge.mjs')],
+-        'mcp_servers.playwright.env_vars': ['PLAYWRIGHT_MCP_EXTENSION_TOKEN'],
++        'mcp_servers.playwright.env_vars': ['PLAYWRIGHT_MCP_EXTENSION_TOKEN', 'CREATOR_BROWSER_PLATFORMS'],
+         'mcp_servers.playwright.enabled_tools': ['browser_tabs', 'browser_read_page', 'browser_navigate', 'browser_wait_for'],
+         'mcp_servers.playwright.default_tools_approval_mode': 'approve',
+       };
+@@ -89,8 +93,11 @@
+   }
+   async collect(sources, config, onProgress = async () => {}) {
+     const at = new Date().toISOString();
++    const active = new Set(activePlatforms(config));
++    const skipped = sources.filter(source => !active.has(source.platform)).map(source => ({ ...source, status: 'paused', count: 0, message: '该平台已暂停，本轮未启动访问' }));
++    sources = sources.filter(source => active.has(source.platform));
+     if (config.collector === 'playwright') {
+-      const result = { sources: [], items: [] }, blocked = new Set();
++      const result = { sources: skipped, items: [] }, blocked = new Set();
+       // Keep completed batches when another page stalls or a later model call fails.
+       for (let start = 0; start < sources.length; start += 2) {
+         this.checkRunning();
+@@ -98,7 +105,7 @@
+         result.sources.push(...next.filter(s => blocked.has(s.platform)).map(s => ({ ...s, status: 'blocked', count: 0, message: '该平台需要处理登录或验证，未继续访问' })));
+         if (batch.length) {
+           try {
+-            const collected = validateCollection(await this.codex(collectionPrompt(batch), 'collection', true), batch, new Date().toISOString());
++            const collected = validateCollection(await this.codex(collectionPrompt(batch), 'collection', true, [...new Set(batch.map(source => source.platform))]), batch, new Date().toISOString());
+             result.sources.push(...collected.sources); result.items.push(...collected.items);
+             for (const s of collected.sources) if (s.status === 'blocked') blocked.add(s.platform);
+           } catch (error) { result.sources.push(...batch.map(s => ({ ...s, status: 'error', count: 0, message: '本批 ' + batch.length + ' 个来源一起中断：' + safeMessage(error) }))); }
+@@ -107,7 +114,7 @@
+       }
+       return result;
+     }
+-    const output = { sources: [], items: [] };
++    const output = { sources: skipped, items: [] };
+     const blocked = new Set();
+     for (const source of sources) {
+       this.checkRunning();
+diff --git a/src/server.mjs b/src/server.mjs
+--- a/src/server.mjs
++++ b/src/server.mjs
+@@ -42,13 +42,21 @@
+         if (url.pathname === '/api/stop') return json(response, 200, await workflow.stop());
+         if (url.pathname === '/api/config') {
+           const config = validateConfig(input.config);
++          let stopped = false;
+           if (input.playwrightToken) {
+             if (typeof input.playwrightToken !== 'string' || input.playwrightToken.length > 512 || /\s/.test(input.playwrightToken)) throw new Error('连接令牌格式无效，请只粘贴令牌值');
++          }
++          const previous = await workflow.store.read('config');
++          if (workflow.busy && config.pausedPlatforms.some(platform => !(previous.pausedPlatforms ?? ['xiaohongshu']).includes(platform))) {
++            stopped = (await workflow.stop()).stopped;
++            config.enabled = false;
++          }
++          if (input.playwrightToken) {
+             const secrets = await workflow.store.read('secrets');
+             await workflow.store.write('secrets', { ...secrets, playwrightToken: input.playwrightToken });
+           }
+           await workflow.store.write('config', config);
+-          return json(response, 200, { ok: true });
++          return json(response, 200, { ok: true, stopped });
+         }
+         if (url.pathname === '/api/model-backend') {
+           const models = ['gpt-6-luna', 'gpt-5.6-luna', 'grok-4.7'];
+diff --git a/src/store.mjs b/src/store.mjs
+--- a/src/store.mjs
++++ b/src/store.mjs
+@@ -20,6 +20,7 @@
+     }
+     const config = await this.read('config');
+     if (config.broadResearch == null) await this.update('config', value => ({ ...value, broadResearch: true, limits: { ...value.limits, maxSources: value.limits?.maxSources === 10 ? 12 : value.limits?.maxSources } }));
++    if (config.pausedPlatforms == null) await this.update('config', value => ({ ...value, pausedPlatforms: ['xiaohongshu'] }));
+   }
+   async read(name) { return JSON.parse(await readFile(this.file(name), 'utf8')); }
+   async update(name, transform) {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { makeSources, reviewWindows } from './model.mjs';
+import { makeSources, reviewWindows, activePlatforms } from './model.mjs';
 import { validatePack } from './prompts.mjs';
 import { safeMessage } from './runtime.mjs';
 import { scheduleDue, shanghaiDate } from './schedule.mjs';
@@ -13,9 +13,10 @@ const metricNames = { views: '播放／阅读', likes: '赞', comments: '评论'
 export function renderReport(report) {
   const lines = ['# 内容工作流报告', '', '生成时间：' + new Date(report.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + '（北京时间）', '', '任务状态：' + ({ success: '完成', partial: '部分来源未取得', failed: '本次未完成' }[report.status] || report.status), ''];
   if (report.error) lines.push('原因：' + report.error, '');
+  for (const platform of report.pausedPlatforms || []) lines.push(label[platform] + '自动采集已暂停，本轮未访问或采样该平台；其稿件属于内容适配，不能据此确认平台热度。', '');
   if (report.research) {
     lines.push('## 本轮研究范围', '', '公开热榜／行业讨论 → 自动扩展搜索 → 两平台作品验证 → 选题筛选。指定账号与作品仅作补充。所有数据均为有限样本，不代表整个平台。', '');
-    for (const source of report.research.sources) lines.push('- ' + source.label + '：' + source.status + '；' + source.count + ' 条' + (source.message ? '；' + source.message : ''));
+    for (const source of report.research.sources) lines.push('- ' + source.label + (source.optional ? '（可选来源）' : '') + '：' + source.status + '；' + source.count + ' 条' + (source.message ? '；' + source.message : ''));
     if (report.researchPlan) { lines.push('', '搜索计划：' + report.researchPlan.summary); for (const q of report.researchPlan.queries) lines.push('- ' + q.query + '：' + q.reason); }
     for (const note of report.researchNotes || []) lines.push('研究限制：' + note);
     lines.push('', '抖音有效作品：' + (report.coverage?.douyin || 0) + '；小红书有效作品：' + (report.coverage?.xiaohongshu || 0));
@@ -84,7 +85,7 @@ export class Workflow {
   }
   async status() {
     const [config, jobs, notes, posts, items, signals, state, secrets] = await Promise.all(['config', 'jobs', 'notes', 'posts', 'items', 'signals', 'state', 'secrets'].map(n => this.store.read(n)));
-    return { config, jobs: jobs.slice(-20).reverse(), notes, posts, itemCount: items.length, signalCount: signals.length, state, busy: this.busy, playwrightTokenSaved: Boolean(secrets.playwrightToken), browserConfigured: config.collector === 'opencli' || Boolean(secrets.playwrightToken) };
+    return { config, jobs: jobs.slice(-20).reverse(), notes, posts, itemCount: items.length, signalCount: signals.length, state, busy: this.busy, playwrightTokenSaved: Boolean(secrets.playwrightToken), browserConfigured: config.collector === 'opencli' || Boolean(secrets.playwrightToken), modelBackend: { enabled: Boolean(secrets.modelBackend?.enabled), model: secrets.modelBackend?.model || null, hasKey: Boolean(secrets.modelBackend?.apiKey) } };
   }
   async updateJob(job) {
     await this.store.update('jobs', jobs => {
@@ -99,13 +100,14 @@ export class Workflow {
     this.busy = true; this.stopped = false; this.providers.begin?.();
     let release;
     const job = { id: 'job-' + Date.now() + '-' + randomUUID().slice(0, 8), kind, status: 'running', stage: '准备任务', createdAt: new Date().toISOString(), reportId: null };
-    let collection = { sources: [], items: [] }, bundle, report;
+    let collection = { sources: [], items: [] }, bundle, report, pausedPlatforms = [];
     let research = { sources: [], signals: [] }, researchPlan = null, insights = null, coverage = {}, authors = [];
     const researchNotes = [];
     try {
       release = await this.store.lock();
       await this.updateJob(job);
       const [config, posts] = await Promise.all([this.store.read('config'), this.store.read('posts')]);
+      pausedPlatforms = ['douyin', 'xiaohongshu'].filter(platform => !activePlatforms(config).includes(platform));
       if (kind !== 'review' && config.broadResearch !== false && this.providers.publicResearch) {
         job.stage = '正在收集公开热榜与行业讨论'; await this.updateJob(job);
         try { research = await this.providers.publicResearch(); }
@@ -123,14 +125,14 @@ export class Workflow {
       const sources = makeSources(config, posts, { snapshots: await this.store.read('snapshots'), attempts: sourceState.sourceAttempts, reviewOnly: kind === 'review', researchQueries: researchPlan?.queries.map(q => q.query) || [] });
       const selected = kind === 'review' ? sources.filter(s => s.kind === 'published') : sources;
       await this.store.update('state', value => ({ ...value, sourceAttempts: { ...value.sourceAttempts, ...Object.fromEntries(selected.filter(s => s.postId).map(s => [s.postId, new Date().toISOString()])) } }));
-      job.stage = '正在读取两平台页面'; await this.updateJob(job);
+      job.stage = '正在读取已开启平台的页面'; await this.updateJob(job);
       if (selected.length) {
         try { collection = await this.providers.collect(selected, config, async progress => {
           if (progress.items) {
             collection = { sources: progress.sources, items: progress.items };
             await this.store.update('items', rows => [...new Map([...rows, ...progress.items].map(i => [i.id, i])).values()].slice(-500));
           }
-          job.stage = '两平台研究：已处理 ' + progress.completed + '/' + progress.total + ' 个来源，取得 ' + progress.itemCount + ' 条作品'; await this.updateJob(job); this.checkRunning();
+          job.stage = '平台研究：已处理 ' + progress.completed + '/' + progress.total + ' 个来源，取得 ' + progress.itemCount + ' 条作品'; await this.updateJob(job); this.checkRunning();
         }); }
         catch (error) { collection.sources.push(...selected.filter(s => !collection.sources.some(done => done.id === s.id)).map(s => ({ ...s, status: 'error', count: 0, message: safeMessage(error) }))); }
       }
@@ -146,7 +148,7 @@ export class Workflow {
       const state = await this.store.read('state');
       let previousReview = null;
       if (state.lastReviewId) { try { previousReview = JSON.parse(await readFile(path.join(this.store.root, 'reports', state.lastReviewId + '.json'), 'utf8')).review; } catch {} }
-      bundle = { profile: config.profile, notes: (await this.store.read('notes')).slice(-30), items: [...new Map(collection.items.map(i => [i.id, i])).values()], signals: research.signals, coverage, researchPlan, reviews: reviewWindows(posts, snapshots), previousReview };
+      bundle = { profile: config.profile, pausedPlatforms, notes: (await this.store.read('notes')).slice(-30), items: [...new Map(collection.items.map(i => [i.id, i])).values()], signals: research.signals, coverage, researchPlan, reviews: reviewWindows(posts, snapshots), previousReview };
       if (kind !== 'review' && this.providers.analyze) {
         job.stage = '正在比较话题证据、账号样本并筛选候选'; await this.updateJob(job);
         try { insights = validateInsights(await this.providers.analyze(bundle), bundle); }
@@ -164,8 +166,9 @@ export class Workflow {
         else review = { summary: posts.length ? '尚无可用于 72 小时或 7 天复盘的真实指标快照。' : '尚未登记已发布内容。首次发布后在工作台记录链接和时间，即可开始自动跟踪。', findings: [], nextWeekAdvice: posts.length ? ['等待观察窗口到期；公开页面未提供的指标可以在发布记录中补充。'] : ['登记第一篇真实发布内容。'] };
       }
       this.checkRunning();
-      job.status = collection.sources.some(s => ['blocked', 'error'].includes(s.status)) || research.sources.some(s => s.status !== 'ok') || researchNotes.length || (kind !== 'review' && (!coverage.douyin || !coverage.xiaohongshu)) ? 'partial' : 'success';
-      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: job.status, collection, evidence: bundle.items, research, researchPlan, researchNotes, insights, coverage, authors, pack, review, windows: bundle.reviews };
+      const missingCoverage = kind !== 'review' && activePlatforms(config).some(p => !coverage[p]);
+      job.status = collection.sources.some(s => ['blocked', 'error'].includes(s.status)) || research.sources.some(s => s.status !== 'ok' && !s.optional) || researchNotes.length || missingCoverage ? 'partial' : 'success';
+      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: job.status, pausedPlatforms, collection, evidence: bundle.items, research, researchPlan, researchNotes, insights, coverage, authors, pack, review, windows: bundle.reviews };
       await this.store.saveReport(job.id, report, renderReport(report));
       job.reportId = job.id;
       state.lastCollectionId = job.id;
@@ -176,7 +179,7 @@ export class Workflow {
     } catch (error) {
       if (!release) throw error;
       job.status = 'failed'; job.stage = this.stopped ? '本次任务已停止' : '本次任务未完成'; job.error = safeMessage(error);
-      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: 'failed', collection, evidence: collection.items, research, researchPlan, researchNotes, insights, coverage, authors, error: job.error };
+      report = { id: job.id, kind, createdAt: new Date().toISOString(), status: 'failed', pausedPlatforms, collection, evidence: collection.items, research, researchPlan, researchNotes, insights, coverage, authors, error: job.error };
       await this.store.saveReport(job.id, report, renderReport(report));
       job.reportId = job.id;
     } finally {

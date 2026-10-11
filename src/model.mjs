@@ -59,15 +59,22 @@ export function normalizeItem(raw, source, at) {
   };
 }
 
+export function activePlatforms(config) {
+  const paused = new Set(config.pausedPlatforms ?? ['xiaohongshu']);
+  return ['douyin', 'xiaohongshu'].filter(platform => !paused.has(platform));
+}
+
 export function makeSources(config, posts = [], { now = new Date(), snapshots = [], attempts = {}, reviewOnly = false, researchQueries = [] } = {}) {
   const sources = [];
+  const active = new Set(activePlatforms(config));
   const add = input => {
+    if (!active.has(input.platform)) return;
     if (input.url) platformUrl(input.url, input.platform);
     const identity = input.url || input.query;
     sources.push({ ...input, id: 's-' + digest(input.platform + ':' + input.kind + ':' + identity), limit: input.kind === 'published' ? 1 : Math.min(5, Math.max(1, config.limits?.perSource || 5)) });
   };
   const pending = new Set(reviewWindows(posts, snapshots, now).filter(r => r.status === 'awaiting_data').map(r => r.postId));
-  const queued = posts.filter(p => pending.has(p.id)).sort((a, b) => (Date.parse(attempts[a.id] || '') || 0) - (Date.parse(attempts[b.id] || '') || 0));
+  const queued = posts.filter(p => active.has(p.platform) && pending.has(p.id)).sort((a, b) => (Date.parse(attempts[a.id] || '') || 0) - (Date.parse(attempts[b.id] || '') || 0));
   const max = config.limits?.maxSources || 12;
   const researchBudget = config.broadResearch !== false ? 8 : 4;
   const ownBudget = reviewOnly ? max : Math.min(4, Math.max(0, max - researchBudget));
@@ -100,6 +107,8 @@ export function validateConfig(config) {
   if (!['playwright', 'opencli'].includes(config.collector)) throw new Error('请选择采集方式');
   if (!Array.isArray(config.keywords) || config.keywords.length > 8) throw new Error('补充关键词最多八个');
   if (config.broadResearch != null && typeof config.broadResearch !== 'boolean') throw new Error('广泛研究开关无效');
+  if (config.pausedPlatforms != null && (!Array.isArray(config.pausedPlatforms) || config.pausedPlatforms.some(p => !['douyin', 'xiaohongshu'].includes(p)))) throw new Error('暂停采集的平台设置无效');
+  config.pausedPlatforms ??= ['xiaohongshu'];
   if (!Array.isArray(config.accounts) || config.accounts.length > 6) throw new Error('对标账号最多六个');
   if (!Array.isArray(config.links) || config.links.length > 6) throw new Error('参考作品最多六个');
   if (!Number.isInteger(config.scheduleHour) || config.scheduleHour < 0 || config.scheduleHour > 23) throw new Error('每日运行小时应为 0—23');
@@ -131,10 +140,10 @@ export function reviewWindows(posts, snapshots, now = new Date()) {
 
 export function defaultConfig() {
   return {
-    collector: 'playwright', enabled: false, scheduleHour: 9, broadResearch: true,
+    collector: 'playwright', enabled: false, scheduleHour: 9, broadResearch: true, pausedPlatforms: ['xiaohongshu'],
     keywords: ['AI 实际使用', 'AI 个人成长'], accounts: [],
     links: [
-      { platform: 'douyin', url: 'https://www.douyin.com/video/7690817035621661111', label: '用户指定对标的置顶作品' },
+      { platform: 'douyin', url: 'https://www.douyin.com/video/7690817035621666111', label: '用户指定对标的置顶作品' },
       { platform: 'douyin', url: 'https://www.douyin.com/video/7692084992523930880', label: '用户指定对标的置顶作品' },
       { platform: 'douyin', url: 'https://www.douyin.com/video/7683154176955731234', label: '用户指定对标的置顶作品' },
     ],

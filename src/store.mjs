@@ -20,6 +20,7 @@ export class Store {
     }
     const config = await this.read('config');
     if (config.broadResearch == null) await this.update('config', value => ({ ...value, broadResearch: true, limits: { ...value.limits, maxSources: value.limits?.maxSources === 10 ? 12 : value.limits?.maxSources } }));
+    if (config.pausedPlatforms == null) await this.update('config', value => ({ ...value, pausedPlatforms: ['xiaohongshu'] }));
   }
   async read(name) { return JSON.parse(await readFile(this.file(name), 'utf8')); }
   async update(name, transform) {

@@ -1,7 +1,14 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { checkBrowserCall, pageReadCode, mutePageCode, currentPageCode } from './browser-read.mjs';
+import { checkBrowserCall, pageReadCode, mutePageCode, currentPageCode, scopePageCode } from './browser-read.mjs';
+
+let platforms;
+try {
+  platforms = JSON.parse(process.env.CREATOR_BROWSER_PLATFORMS || '[]');
+  if (!Array.isArray(platforms) || platforms.some(platform => !['douyin', 'xiaohongshu'].includes(platform))) throw new Error();
+} catch { process.stderr.write('浏览器平台范围无效，未启动连接\n'); process.exit(1); }
+const scopedRead = scopePageCode(pageReadCode, platforms), scopedCurrent = scopePageCode(currentPageCode, platforms), scopedMute = scopePageCode(mutePageCode, platforms);
 
 // MCP is newline-delimited JSON-RPC. Proxy the pinned server and add one fixed reader.
 const upstream = spawn(process.execPath, [fileURLToPath(new URL('../node_modules/@playwright/mcp/cli.js', import.meta.url)), '--extension', '--snapshot-mode', 'none'], { shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -16,10 +23,10 @@ createInterface({ input: process.stdin }).on('line', line => {
   catch { error(null, '无效 MCP 请求'); return; }
   if (message.method === 'tools/list') listings.add(message.id);
   if (message.method === 'tools/call') {
-    try { checkBrowserCall(message.params.name, message.params.arguments); }
+    try { checkBrowserCall(message.params.name, message.params.arguments, platforms); }
     catch (e) { error(message.id, e.message); return; }
-    if (message.params.name === 'browser_read_page') message.params = { name: 'browser_evaluate', arguments: { function: pageReadCode } };
-    if (message.params.name === 'browser_tabs') message.params = { name: 'browser_evaluate', arguments: { function: currentPageCode } };
+    if (message.params.name === 'browser_read_page') message.params = { name: 'browser_evaluate', arguments: { function: scopedRead } };
+    if (message.params.name === 'browser_tabs') message.params = { name: 'browser_evaluate', arguments: { function: scopedCurrent } };
     if (message.params.name === 'browser_navigate') navigation.add(message.id);
     message.params.arguments = { ...message.params.arguments, _meta: { raw: true, json: true } };
   }
@@ -31,7 +38,7 @@ createInterface({ input: upstream.stdout }).on('line', line => {
     if (muting.has(message.id)) { send(muting.get(message.id)); muting.delete(message.id); return; }
     if (navigation.delete(message.id)) {
       const id = 'creator-internal-mute-' + ++serial; muting.set(id, message);
-      upstream.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_evaluate', arguments: { function: mutePageCode, _meta: { raw: true, json: true } } } }) + '\n'); return;
+      upstream.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_evaluate', arguments: { function: scopedMute, _meta: { raw: true, json: true } } } }) + '\n'); return;
     }
     if (listings.delete(message.id) && Array.isArray(message.result?.tools)) message.result.tools = [
       ...message.result.tools.filter(t => names.has(t.name)).map(t => t.name === 'browser_wait_for' ? { ...t, description: '等待最多五秒加载，不返回页面快照', inputSchema: { type: 'object', required: ['time'], properties: { time: { type: 'number', minimum: 0.1, maximum: 5 } }, additionalProperties: false } } : t),

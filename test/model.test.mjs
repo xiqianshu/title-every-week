@@ -47,7 +47,7 @@ test('review identifies delayed observations and keeps missing view counts unkno
 
 test('source requests preserve the configured account URL and exclude arbitrary hosts', () => {
   assert.equal(typeof model.makeSources, 'function');
-  const config = { keywords: ['AI 实践'], accounts: [{ platform: 'douyin', url: 'https://www.douyin.com/user/MS4wLjABAAAAtest', label: '对标' }], limits: { perSource: 5 } };
+  const config = { pausedPlatforms: [], keywords: ['AI 实践'], accounts: [{ platform: 'douyin', url: 'https://www.douyin.com/user/MS4wLjABAAAAtest', label: '对标' }], limits: { perSource: 5 } };
   const requests = model.makeSources(config, []);
   assert.ok(requests.some(r => r.kind === 'account' && r.url === config.accounts[0].url));
   assert.ok(requests.some(r => r.platform === 'xiaohongshu' && r.query === 'AI 实践'));
@@ -79,7 +79,7 @@ test('empty observations cannot mask a later usable backend observation', () => 
 
 test('a growing post queue rotates due posts and retains research from both platforms', () => {
   const posts = Array.from({ length: 16 }, (_, i) => ({ id: 'p' + i, platform: 'douyin', url: 'https://www.douyin.com/video/' + i, publishedAt: '2026-10-01T01:00:00Z' }));
-  const config = model.defaultConfig();
+  const config = { ...model.defaultConfig(), pausedPlatforms: [] };
   const attempts = {}, observed = new Set();
   for (let day = 8; day < 12; day++) {
     const now = new Date('2026-10-' + day.toString().padStart(2,'0') + 'T02:00:00Z');

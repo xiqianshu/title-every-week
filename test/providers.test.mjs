@@ -90,7 +90,7 @@ test('stop during asynchronous browser setup cannot launch a new child process',
   } finally {release();await rm(root,{recursive:true,force:true});}
 });
 
-test('weekly content rejects fabricated evidence and keeps personal drafts pending', () => {
+test('weekly content rejects invented evidence while accepting sourced opinion drafts', () => {
   assert.equal(typeof prompts.validatePack, 'function');
   const bundle = { items: [{ id: 'actual-source', title: '来源' }], notes: [], profile: {} };
   const valid = packFor(bundle);
@@ -98,8 +98,11 @@ test('weekly content rejects fabricated evidence and keeps personal drafts pendi
   const bad = structuredClone(valid);
   bad.topics[0].sourceIds = ['not-collected'];
   assert.throws(() => prompts.validatePack(bad, bundle, 'weekly'), /来源/);
+  const opinion = structuredClone(valid);
+  opinion.topics[3].missingMaterials = [];
+  assert.equal(prompts.validatePack(opinion, bundle, 'weekly').topics.length, 4);
   const unsupported = structuredClone(valid);
-  unsupported.topics[2].missingMaterials = [];
+  unsupported.topics[2].factIds = ['invented-personal-material'];
   assert.throws(() => prompts.validatePack(unsupported, bundle, 'weekly'), /素材/);
 });
 
@@ -121,7 +124,7 @@ test('background providers use absolute Node and handle pinned OpenCLI note and 
       const output = args.includes('note') ? [{ field: 'title', value: '真实笔记标题' }, { field: 'content', value: '真实笔记正文' }, { field: 'collects', value: '12' }] : [{ aweme_id: '123', title: '账号作品', digg_count: 4 }];
       return { stdout: JSON.stringify(output) };
     });
-    const result = await provider.collect([{ id: 'note', platform: 'xiaohongshu', kind: 'link', url: 'https://www.xiaohongshu.com/explore/abc?xsec_token=test', limit: 5 }, { id: 'account', platform: 'douyin', kind: 'account', url: 'https://www.douyin.com/user/MS4wLjABAAAAexample', limit: 5 }], { collector: 'opencli' });
+    const result = await provider.collect([{ id: 'note', platform: 'xiaohongshu', kind: 'link', url: 'https://www.xiaohongshu.com/explore/abc?xsec_token=test', limit: 5 }, { id: 'account', platform: 'douyin', kind: 'account', url: 'https://www.douyin.com/user/MS4wLjABAAAAexample', limit: 5 }], { collector: 'opencli', pausedPlatforms: [] });
     assert.ok(calls.every(c => c.command === process.execPath));
     assert.equal(result.items.length, 2);
     assert.equal(result.items[0].body, '真实笔记正文');

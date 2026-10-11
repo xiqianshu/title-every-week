@@ -10,7 +10,7 @@ export const PUBLIC_SOURCES = [
   { id: 'douyin-hot', label: '抖音公开热点榜', kind: 'hot_list', endpoint: 'https://www.douyin.com/aweme/v1/web/hot/search/list/?device_platform=webapp&aid=6383&channel=channel_pc_web&detail_list=1' },
   { id: 'baidu', label: '百度实时热搜', kind: 'hot_list', endpoint: 'https://top.baidu.com/board?tab=realtime' },
   { id: 'bilibili', label: 'B站热门视频', kind: 'popular', endpoint: 'https://api.bilibili.com/x/web-interface/popular?ps=30&pn=1' },
-  { id: 'v2ex', label: 'V2EX 热门讨论', kind: 'popular', endpoint: 'https://www.v2ex.com/api/topics/hot.json' },
+  { id: 'v2ex', label: 'V2EX 热门讨论', kind: 'popular', optional: true, maxTime: 8, endpoint: 'https://www.v2ex.com/api/topics/hot.json' },
   { id: 'sspai', label: '少数派热门文章', kind: 'popular', endpoint: 'https://sspai.com/api/v1/article/tag/page/get?limit=30&offset=0&tag=%E7%83%AD%E9%97%A8%E6%96%87%E7%AB%A0&released=false' },
   { id: 'github', label: 'GitHub 当日趋势项目', kind: 'hot_list', endpoint: 'https://github.com/trending?since=daily' },
 ];
@@ -56,7 +56,8 @@ export function parseFeed(source, body, at) {
 }
 
 async function readPublic(source, checkRunning) {
-  const common = ['--disable', '--fail', '--location', '--silent', '--show-error', '--max-time', '20', '--proto', '=https', '--proto-redir', '=https', '--max-filesize', '2000000', '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128 Safari/537.36'];
+  const maxTime = Number.isFinite(source.maxTime) && source.maxTime > 0 ? Math.min(30, source.maxTime) : 20;
+  const common = ['--disable', '--fail', '--location', '--silent', '--show-error', '--max-time', String(maxTime), '--proto', '=https', '--proto-redir', '=https', '--max-filesize', '2000000', '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128 Safari/537.36'];
   let directory;
   try {
     const extra = [];
@@ -69,16 +70,23 @@ async function readPublic(source, checkRunning) {
       extra.push('--cookie', jar, '--referer', 'https://www.douyin.com/');
     }
     checkRunning();
-    return (await runProcess('/usr/bin/curl', [...common, ...extra, source.endpoint], { timeoutMs: 25000, maxBytes: 2000000 })).stdout;
+    return (await runProcess('/usr/bin/curl', [...common, ...extra, source.endpoint], { timeoutMs: maxTime * 1000 + 5000, maxBytes: 2000000 })).stdout;
   } finally { if (directory) await rm(directory, { recursive: true, force: true }); }
 }
 export async function collectPublicSources(reader = readPublic, checkRunning = () => {}) {
-  const results = await Promise.all(PUBLIC_SOURCES.map(async source => {
-    try {
+  const fetchSource = async source => {
+    const attempt = async () => {
       checkRunning();
       const body = await reader(source, checkRunning), signals = parseFeed(source, body, new Date().toISOString());
       return { source: { ...source, status: signals.length ? 'ok' : 'empty', count: signals.length, message: signals.length ? '' : '未取得列表内容' }, signals };
-    } catch (error) { return { source: { ...source, status: 'error', count: 0, message: safeMessage(error) }, signals: [] }; }
-  }));
+    };
+    try { return await attempt(); }
+    catch (first) {
+      if (source.optional) return { source: { ...source, status: 'error', count: 0, message: safeMessage(first) }, signals: [] };
+      try { return await attempt(); }
+      catch (error) { return { source: { ...source, status: 'error', count: 0, message: safeMessage(error) }, signals: [] }; }
+    }
+  };
+  const results = await Promise.all(PUBLIC_SOURCES.map(fetchSource));
   return { sources: results.map(r => r.source), signals: results.flatMap(r => r.signals) };
 }

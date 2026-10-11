@@ -35,14 +35,15 @@ test('a later browser batch failure preserves completed works and incremental pr
   const root = await mkdtemp(path.join(tmpdir(), 'creator-batches-'));
   try {
     const store = new Store(root); await store.init(); await store.write('secrets',{playwrightToken:'local-private'});
+    await store.update('config', config => ({ ...config, pausedPlatforms: [] }));
     let calls=0; const progress=[];
     const provider = new Providers(path.resolve('.'),store,async (command,args) => {
       if (++calls > 1) throw new Error('第二批页面超时');
-      await writeFile(args[args.indexOf('--output-last-message')+1],JSON.stringify({sources:[1,2,3].map(i=>({sourceId:'s'+i,status:i===1?'ok':'empty',message:''})),items:[{sourceId:'s1',title:'已取得作品',url:'https://www.xiaohongshu.com/search_result/abc?xsec_token=public',body:'实际页面',metrics:{likes:2},metricEvidence:'点赞 2'}]}));
+      await writeFile(args[args.indexOf('--output-last-message')+1],JSON.stringify({sources:[1,2].map(i=>({sourceId:'s'+i,status:i===1?'ok':'empty',message:''})),items:[{sourceId:'s1',title:'已取得作品',url:'https://www.xiaohongshu.com/search_result/abc?xsec_token=public',body:'实际页面',metrics:{likes:2},metricEvidence:'点赞 2'}]}));
       return {stdout:''};
     });
     const sources=[1,2,3,4].map(i=>({id:'s'+i,platform:'xiaohongshu',kind:'search',query:'AI测试'+i,limit:5}));
-    const result=await provider.collect(sources,{collector:'playwright'},async value=>progress.push(value));
+    const result=await provider.collect(sources,{collector:'playwright',pausedPlatforms:[]},async value=>progress.push(value));
     assert.equal(calls,2); assert.equal(result.items.length,1); assert.equal(result.sources.length,4);
     assert.equal(result.sources[3].status,'error'); assert.equal(progress[0].itemCount,1); assert.equal(progress[1].completed,4);
     assert.equal(progress[1].items[0].title,'已取得作品');
@@ -57,7 +58,7 @@ test('XHS search result detail URLs identify the same work without accepting lis
 });
 
 test('broad discovery and dynamic searches take priority over a full list of reference accounts', () => {
-  const config = defaultConfig(); config.accounts = Array.from({ length: 6 }, (_, i) => ({ platform: 'douyin', url: 'https://www.douyin.com/user/ref' + i }));
+  const config = { ...defaultConfig(), pausedPlatforms: [] }; config.accounts = Array.from({ length: 6 }, (_, i) => ({ platform: 'douyin', url: 'https://www.douyin.com/user/ref' + i }));
   const sources = makeSources(config, [], { researchQueries: ['AI 视频实测', '低成本创作', '注意力管理'] });
   assert.ok(sources.some(s => s.kind === 'discovery' && s.platform === 'douyin'));
   assert.ok(sources.some(s => s.kind === 'discovery' && s.platform === 'xiaohongshu'));

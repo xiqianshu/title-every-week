@@ -1,0 +1,68 @@
+{
+  "base": "用户上传的内容工作台-源码-给GPT.zip（2026-10-11）",
+  "changed_files": [
+    {
+      "path": "public/app.js",
+      "before_sha256": "b68c6b1b57005e069fd038a97acf8c7281aa66c5da8a52602f108cd6157a247e",
+      "after_sha256": "b61721f072f748be1160632b0cc2c9535402d93a893cc7c6c64de52cbf29e936"
+    },
+    {
+      "path": "src/browser-bridge.mjs",
+      "before_sha256": "e08b2441e606174a268b4aad90dbe9ac1817c4a24870801fe51850d694e5e128",
+      "after_sha256": "099f90fdd7ae2364d970d29d168a968584c276dc658967698c7347fe0d434840"
+    },
+    {
+      "path": "src/browser-read.mjs",
+      "before_sha256": "cb7f8c8ee6159784bab320b3570581bd2b4c850580b93fd07ff0c019397d07f7",
+      "after_sha256": "3b2c8b2e424eae8d659599228d0bcb9c8aff8e7b0a53d68c1344a24d4d1a5201"
+    },
+    {
+      "path": "src/model.mjs",
+      "before_sha256": "255137f853292dab6909313c2e34c0d7a78204c8f565a87d571490902f7d66e2",
+      "after_sha256": "ef9433021f51a8d0baf313b575dabdb16e5c151365397560c132f5483f234ea1"
+    },
+    {
+      "path": "src/pipeline.mjs",
+      "before_sha256": "ae7896e7e53b1a1c663f9439e4ba79b0e013abf9f52594f5d1ae821fd77f6d5b",
+      "after_sha256": "13ad041f5ab5ccb5ad17b9434c084d540fea7b8c7d51143da5d41703d17d85fc"
+    },
+    {
+      "path": "src/providers.mjs",
+      "before_sha256": "68ca926533424c6557426eb60488061e6997afd809b7cc80768aba029a68b25a",
+      "after_sha256": "df13607e246310a45dae1e9d21b96bca50d3dc5e8792193e172bac1cd2c61c31"
+    },
+    {
+      "path": "src/server.mjs",
+      "before_sha256": "454ea6cecd19cd61445d9026a6a6dc02740bd9b00eb8acd234b3145bb1407d5e",
+      "after_sha256": "140127d29ab40fae179fadba4f12550f97a5d60f621d876ea5412cce2d8ab82a"
+    },
+    {
+      "path": "src/store.mjs",
+      "before_sha256": "e55bb28d34445160d00054d899f9de797d0376e7c11648b8c6abf5f708f67834",
+      "after_sha256": "eb662960f8b4e9f3df0a4f66f9409300025c46de384e43b3fdaf01c8572cb10c"
+    }
+  ],
+  "unchanged_uploaded_files": [
+    "package-lock.json",
+    "package.json",
+    "public/index.html",
+    "public/styles.css",
+    "schemas/collection.json",
+    "schemas/insights.json",
+    "schemas/research-plan.json",
+    "schemas/review.json",
+    "schemas/weekly.json",
+    "src/cli.mjs",
+    "src/mac.mjs",
+    "src/prompts.mjs",
+    "src/public-sources.mjs",
+    "src/research.mjs",
+    "src/runtime.mjs",
+    "src/schedule.mjs",
+    "src/update-archive.mjs",
+    "src/update-installer.mjs",
+    "src/update-release.mjs",
+    "src/update-worker.mjs",
+    "src/updater.mjs"
+  ]
+}

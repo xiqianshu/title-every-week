@@ -42,11 +42,35 @@ export function createServer(workflow, updater = null) {
         if (url.pathname === '/api/stop') return json(response, 200, await workflow.stop());
         if (url.pathname === '/api/config') {
           const config = validateConfig(input.config);
+          let stopped = false;
           if (input.playwrightToken) {
             if (typeof input.playwrightToken !== 'string' || input.playwrightToken.length > 512 || /\s/.test(input.playwrightToken)) throw new Error('连接令牌格式无效，请只粘贴令牌值');
-            await workflow.store.write('secrets', { playwrightToken: input.playwrightToken });
+          }
+          const previous = await workflow.store.read('config');
+          if (workflow.busy && config.pausedPlatforms.some(platform => !(previous.pausedPlatforms ?? ['xiaohongshu']).includes(platform))) {
+            stopped = (await workflow.stop()).stopped;
+            config.enabled = false;
+          }
+          if (input.playwrightToken) {
+            const secrets = await workflow.store.read('secrets');
+            await workflow.store.write('secrets', { ...secrets, playwrightToken: input.playwrightToken });
           }
           await workflow.store.write('config', config);
+          return json(response, 200, { ok: true, stopped });
+        }
+        if (url.pathname === '/api/model-backend') {
+          const models = ['gpt-6-luna', 'gpt-5.6-luna', 'grok-4.7'];
+          const enabled = input.enabled === true;
+          const model = String(input.model || 'gpt-6-luna');
+          if (!models.includes(model)) throw new Error('请选择支持的模型');
+          const secrets = await workflow.store.read('secrets');
+          const previous = secrets.modelBackend || {};
+          let apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+          if (apiKey && (apiKey.length > 512 || /\s/.test(apiKey))) throw new Error('API Key 格式无效，请只粘贴 Key 值');
+          if (!apiKey) apiKey = previous.apiKey || '';
+          if (enabled && !apiKey) throw new Error('请先粘贴 OpenCode API Key，再启用');
+          const wire = 'responses';
+          await workflow.store.write('secrets', { ...secrets, modelBackend: { enabled, model, wire, apiKey, baseUrl: 'https://opencode.ai/zen/go/v1' } });
           return json(response, 200, { ok: true });
         }
         if (url.pathname === '/api/notes') {
@@ -71,6 +95,28 @@ export function createServer(workflow, updater = null) {
             await workflow.store.update('snapshots', snapshots => [...snapshots, { postId: post.id, itemId: itemId(post.url, post.platform), collectedAt: new Date().toISOString(), metrics, url: post.url, origin: 'user_backend_entry' }].slice(-10000));
           }
           return json(response, 201, post);
+        }
+        if (url.pathname === '/api/notes/update' || url.pathname === '/api/notes/delete') {
+          const id = String(input.id || '');
+          if (!/^n-[a-z0-9-]{6,40}$/i.test(id)) throw new Error('素材编号无效');
+          if (url.pathname.endsWith('/update')) {
+            const text = String(input.text || '').trim();
+            if (!text || text.length > 10000) throw new Error('素材内容应为 1—10000 字');
+            let found = false;
+            await workflow.store.update('notes', notes => notes.map(n => { if (n.id !== id) return n; found = true; return { ...n, text }; }));
+            if (!found) throw new Error('没有找到这条素材');
+            return json(response, 200, { ok: true });
+          }
+          let removed = 0;
+          await workflow.store.update('notes', notes => { const next = notes.filter(n => n.id !== id); removed = notes.length - next.length; return next; });
+          return json(response, 200, { ok: true, removed });
+        }
+        if (url.pathname === '/api/posts/delete') {
+          const id = String(input.id || '');
+          if (!/^p-[a-z0-9-]{6,80}$/i.test(id)) throw new Error('发布记录编号无效');
+          let removed = 0;
+          await workflow.store.update('posts', posts => { const next = posts.filter(p => p.id !== id); removed = posts.length - next.length; return next; });
+          return json(response, 200, { ok: true, removed });
         }
         if (url.pathname === '/api/run') {
           if (!['collect', 'weekly', 'review'].includes(input.kind)) throw new Error('无效的任务类型');

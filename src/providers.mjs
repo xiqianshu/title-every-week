@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { normalizeItem } from './model.mjs';
+import { normalizeItem, activePlatforms } from './model.mjs';
 import { runProcess, safeMessage, cancelProcesses } from './runtime.mjs';
 import { buildPrompt, collectionPrompt, validatePack } from './prompts.mjs';
 import { collectPublicSources } from './public-sources.mjs';
@@ -46,21 +46,39 @@ export class Providers {
   stop() { this.stopped = true; cancelProcesses(); }
   checkRunning() { if (this.stopped) throw new Error('你已停止当前任务'); }
   binary(name) { return path.join(this.appRoot, 'node_modules', ...(name === 'codex' ? ['@openai', 'codex', 'bin', 'codex.js'] : ['@jackwener', 'opencli', 'dist', 'src', 'main.js'])); }
-  async codex(prompt, schema, browser = false) {
+  async codex(prompt, schema, browser = false, requestedPlatforms = ['douyin', 'xiaohongshu']) {
     this.checkRunning();
     const directory = path.join(this.store.root, 'runs', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const target = path.join(directory, 'result.json');
     const args = ['exec', '--ignore-user-config', '--skip-git-repo-check', '--sandbox', 'read-only', '--output-schema', path.join(this.appRoot, 'schemas', schema + '.json'), '--output-last-message', target, '--cd', directory];
+    const secrets = await this.store.read('secrets');
     const env = {};
+    const backend = secrets.modelBackend;
+    if (backend && backend.enabled && backend.apiKey) {
+      const provider = 'opencode-go';
+      const modelConfig = {
+        'model_provider': provider,
+        ['model_providers.' + provider + '.name']: 'OpenCode Go',
+        ['model_providers.' + provider + '.base_url']: backend.baseUrl || 'https://opencode.ai/zen/go/v1',
+        ['model_providers.' + provider + '.env_key']: 'OPENCODE_GO_API_KEY',
+        ['model_providers.' + provider + '.wire_api']: backend.wire || 'responses',
+        'model': backend.model || 'deepseek-v4.1-flash',
+      };
+      for (const [key, value] of Object.entries(modelConfig)) args.push('-c', key + '=' + JSON.stringify(value));
+      env.OPENCODE_GO_API_KEY = backend.apiKey;
+    }
     if (browser) {
-      const secrets = await this.store.read('secrets');
+      const platforms = activePlatforms(await this.store.read('config')).filter(platform => requestedPlatforms.includes(platform));
+      this.checkRunning();
+      if (!platforms.length) throw new Error('本次请求的平台已暂停，未启动浏览器连接');
       if (!secrets.playwrightToken) throw new Error('请先在工作台填写 Playwright 扩展连接令牌；本次未启动浏览器连接');
       env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = secrets.playwrightToken;
+      env.CREATOR_BROWSER_PLATFORMS = JSON.stringify(platforms);
       const config = {
         'mcp_servers.playwright.command': process.execPath,
         'mcp_servers.playwright.args': [path.join(this.appRoot, 'src', 'browser-bridge.mjs')],
-        'mcp_servers.playwright.env_vars': ['PLAYWRIGHT_MCP_EXTENSION_TOKEN'],
+        'mcp_servers.playwright.env_vars': ['PLAYWRIGHT_MCP_EXTENSION_TOKEN', 'CREATOR_BROWSER_PLATFORMS'],
         'mcp_servers.playwright.enabled_tools': ['browser_tabs', 'browser_read_page', 'browser_navigate', 'browser_wait_for'],
         'mcp_servers.playwright.default_tools_approval_mode': 'approve',
       };
@@ -68,32 +86,35 @@ export class Providers {
     }
     args.push('-');
     this.checkRunning();
-    await this.runner(process.execPath, [this.binary('codex'), ...args], { cwd: directory, input: prompt, env, timeoutMs: browser ? 240000 : 360000 });
+    await this.runner(process.execPath, [this.binary('codex'), ...args], { cwd: directory, input: prompt, env, timeoutMs: 360000 });
     const result = await readFile(target, 'utf8');
     if (result.length > 2000000) throw new Error('结构化报告超过容量限制');
     try { return JSON.parse(result); } catch { throw new Error('模型没有返回有效的结构化报告'); }
   }
   async collect(sources, config, onProgress = async () => {}) {
     const at = new Date().toISOString();
+    const active = new Set(activePlatforms(config));
+    const skipped = sources.filter(source => !active.has(source.platform)).map(source => ({ ...source, status: 'paused', count: 0, message: '该平台已暂停，本轮未启动访问' }));
+    sources = sources.filter(source => active.has(source.platform));
     if (config.collector === 'playwright') {
-      const result = { sources: [], items: [] }, blocked = new Set();
+      const result = { sources: skipped, items: [] }, blocked = new Set();
       // Keep completed batches when another page stalls or a later model call fails.
-      for (let start = 0; start < sources.length; start += 3) {
+      for (let start = 0; start < sources.length; start += 2) {
         this.checkRunning();
-        const next = sources.slice(start, start + 3), batch = next.filter(s => !blocked.has(s.platform));
+        const next = sources.slice(start, start + 2), batch = next.filter(s => !blocked.has(s.platform));
         result.sources.push(...next.filter(s => blocked.has(s.platform)).map(s => ({ ...s, status: 'blocked', count: 0, message: '该平台需要处理登录或验证，未继续访问' })));
         if (batch.length) {
           try {
-            const collected = validateCollection(await this.codex(collectionPrompt(batch), 'collection', true), batch, new Date().toISOString());
+            const collected = validateCollection(await this.codex(collectionPrompt(batch), 'collection', true, [...new Set(batch.map(source => source.platform))]), batch, new Date().toISOString());
             result.sources.push(...collected.sources); result.items.push(...collected.items);
             for (const s of collected.sources) if (s.status === 'blocked') blocked.add(s.platform);
-          } catch (error) { result.sources.push(...batch.map(s => ({ ...s, status: 'error', count: 0, message: safeMessage(error) }))); }
+          } catch (error) { result.sources.push(...batch.map(s => ({ ...s, status: 'error', count: 0, message: '本批 ' + batch.length + ' 个来源一起中断：' + safeMessage(error) }))); }
         }
-        await onProgress({ completed: Math.min(start + 3, sources.length), total: sources.length, itemCount: new Set(result.items.map(i => i.id)).size, sources: result.sources.slice(), items: result.items.slice() });
+        await onProgress({ completed: Math.min(start + 2, sources.length), total: sources.length, itemCount: new Set(result.items.map(i => i.id)).size, sources: result.sources.slice(), items: result.items.slice() });
       }
       return result;
     }
-    const output = { sources: [], items: [] };
+    const output = { sources: skipped, items: [] };
     const blocked = new Set();
     for (const source of sources) {
       this.checkRunning();
